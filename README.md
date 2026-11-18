@@ -76,7 +76,7 @@ dotnet publish src/App/App.csproj -c Release -o <folder>   # the folder name mus
 # release build: no debug files or local paths in the DLLs
 dotnet publish src/App/App.csproj -c Release -o <folder> -p:DebugType=none -p:DebugSymbols=false "-p:PathMap=<repo folder>=."
 # smoke test: reads a real home folder, installs into a throwaway one
-TETZMM_DATA=<scratch> dotnet run --project tools/SmokeTest -- "<home>" "<Vortex downloads>" "<mod zip>" "<older zip of that mod>" [key file]
+TETZMM_DATA=<scratch> dotnet run --project tools/SmokeTest -- "<home>" "<folder of mod zips: Vortex downloads or the archive>" "<mod zip>" "<older zip of that mod>" [key file]
 ```
 
 `TETZMM_DATA` moves all of the tool's own files (settings, state, rollback copies, work folder) for tests;

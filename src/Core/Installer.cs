@@ -612,6 +612,16 @@ public static class Files
 		{
 			File.SetAttributes(f, FileAttributes.Normal);
 		}
+		// Folders too: OneDrive (the default home is in Documents) marks them read-only, and a folder moved out of it into
+		// the rollback copies keeps that, so deleting the old rollback copy failed with "Access ... denied".
+		foreach (string d in Directory.EnumerateDirectories(dir, "*", SearchOption.AllDirectories).Append(dir))
+		{
+			DirectoryInfo info = new(d);
+			if ((info.Attributes & (FileAttributes.ReadOnly | FileAttributes.System | FileAttributes.Hidden)) != 0)
+			{
+				info.Attributes &= ~(FileAttributes.ReadOnly | FileAttributes.System | FileAttributes.Hidden);
+			}
+		}
 		Directory.Delete(dir, true);
 	}
 }

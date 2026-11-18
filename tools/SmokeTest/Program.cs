@@ -75,12 +75,22 @@ ScanResult Now() => Scanner.Scan(fake, Preferences.Load(fake.PreferencesPath), s
 Install(Download("SCOLD"));
 Check(Now().Packages.Count == 1 && Now().Mods.Count == 3, "SCOLD installs three folders as one package");
 
-// BMAN: GP38 pack (GP38Scripts 6.0.2), then SD38-2 (older GP38Scripts 6.0.0 inside): the newer library stays.
+// BMAN: GP38 pack, then SD38-2, both carrying GP38Scripts: whichever copy is newer ends up installed, never the older.
 Install(Download("GP38 6.0.2"));
 string scriptsBefore = Now().Mods.First(m => m.FolderName == "GP38Scripts").Manifest.Version;
-PackageRecord sd38 = Install(Download("SD38-2"));
+string sd38Zip = Download("SD38-2");
+string bundled;
+using (System.IO.Compression.ZipArchive z = System.IO.Compression.ZipFile.OpenRead(sd38Zip))
+{
+	System.IO.Compression.ZipArchiveEntry e = z.Entries.First(x => x.FullName.Replace('\\', '/').EndsWith("GP38Scripts/Info.json", StringComparison.OrdinalIgnoreCase));
+	using StreamReader r = new(e.Open());
+	bundled = ModManifest.Parse(r.ReadToEnd(), "GP38Scripts")!.Version;
+}
+PackageRecord sd38 = Install(sd38Zip);
 ScanResult s2 = Now();
-Check(s2.Mods.First(m => m.FolderName == "GP38Scripts").Manifest.Version == scriptsBefore, $"SD38-2's bundled GP38Scripts doesn't replace the newer {scriptsBefore}");
+string newest = Versions.Compare(bundled, scriptsBefore) > 0 ? bundled : scriptsBefore;
+Check(s2.Mods.First(m => m.FolderName == "GP38Scripts").Manifest.Version == newest,
+	$"GP38Scripts ends at the newer copy ({scriptsBefore} installed, {bundled} in SD38-2 -> {newest})");
 Check(s2.Packages.Count(p => p.Shared.Count > 0) == 2, "GP38Scripts is shared by both BMAN packages");
 Installer.Uninstall(fake, st, s2.Packages.First(p => p.Record == sd38), Log);
 s2 = Now();
@@ -123,5 +133,16 @@ Files.CopyDirectory(Now().Mods.First(m => m.FolderName == "scold").Folder, Path.
 Check(Now().Mods.Where(m => m.Key == "scold/scold").All(m => m.Notes.Any(n => n.StartsWith("Duplicate"))), "the same mod under two folder names is flagged on both");
 
 Check(Preferences.Load(fake.PreferencesPath).Find("aggregate-production-loads") != null || Preferences.Load(fake.PreferencesPath).Serialize().Contains("scold/scold"), "Preferences.json has SCOLD's entries");
+// Rollback copies taken from a OneDrive home keep read-only folders; replacing one must still work.
+string ro = Path.Combine(data, "readonly-folders");
+Directory.CreateDirectory(Path.Combine(ro, "Assets", "Inner"));
+File.WriteAllText(Path.Combine(ro, "Assets", "Inner", "a.txt"), "x");
+foreach (string d in new[] { Path.Combine(ro, "Assets", "Inner"), Path.Combine(ro, "Assets"), ro })
+{
+	new DirectoryInfo(d).Attributes |= FileAttributes.ReadOnly;
+}
+Files.TryDeleteDirectory(ro);
+Check(!Directory.Exists(ro), "a folder tree with read-only folders is deleted");
+
 Console.WriteLine(failures == 0 ? "ALL PASSED" : $"{failures} FAILED");
 return failures;
