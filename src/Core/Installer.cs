@@ -28,10 +28,10 @@ public sealed class PlannedMod
 	/// <summary>The folder in Mods it goes to: the installed copy's folder when the mod is already installed.</summary>
 	public required string Target { get; init; }
 	public InstalledMod? Existing { get; init; }
-	public required PlanAction Action { get; init; }
+	public required PlanAction Action { get; set; }
 	/// <summary>Carried by another installed package too (a bundled library such as GP38Scripts).</summary>
 	public bool Shared { get; init; }
-	public string? Reason { get; init; }
+	public string? Reason { get; set; }
 	public bool Copies => Action is PlanAction.Install or PlanAction.Update or PlanAction.Reinstall or PlanAction.Downgrade;
 	public bool ReplacesVortexFolder => Copies && (Existing?.VortexManaged == true || File.Exists(Path.Combine(Target, Scanner.VortexMarker)));
 }
@@ -130,17 +130,34 @@ public static class Installer
 	/// shared and already installed) are left out. The plans use the archive's extracted folders: dispose the parent
 	/// plan only after applying them.
 	/// </summary>
-	public static List<InstallPlan> Split(Settings settings, InstallPlan plan, ScanResult installed, StateStore state)
+	public static List<InstallPlan> Split(Settings settings, InstallPlan plan, ScanResult installed, StateStore state, out List<PlannedMod> skipped)
 	{
 		List<InstallPlan> plans = [];
-		foreach (PlannedMod m in plan.Mods.Where(m => m.Copies))
+		skipped = plan.Mods.Where(m => m.Action == PlanAction.Blocked).ToList();
+		foreach (PlannedMod m in plan.Mods.Where(m => m.Action != PlanAction.Blocked))
 		{
+			// Planned again as its own package: in the bundle's plan its own installed package made it look shared.
 			InstallPlan sub = new() { SourcePath = m.Source, IsFolder = true, ExtractDir = m.Source, OwnsExtractDir = false };
 			sub.Package = state.Match([m.Manifest],
 				k => installed.Mods.FirstOrDefault(i => string.Equals(i.Key, k, StringComparison.OrdinalIgnoreCase))?.Manifest);
 			sub.Mods.Add(PlanMod(settings, sub, m.Source, m.Manifest, installed, state));
 			sub.Name = m.Manifest.Name;
-			plans.Add(sub);
+			PlannedMod pm = sub.Mods[0];
+			// A bundle doesn't copy what's already there or put an older copy over a newer one.
+			if (pm.Action is PlanAction.Reinstall or PlanAction.Downgrade)
+			{
+				pm.Reason = pm.Action == PlanAction.Reinstall ? "already installed at this version" : $"the installed {pm.Existing!.Manifest.Version} is newer";
+				pm.Action = PlanAction.KeepInstalled;
+			}
+			if (pm.Copies)
+			{
+				plans.Add(sub);
+			}
+			else
+			{
+				skipped.Add(pm);
+				sub.Dispose();
+			}
 		}
 		return plans;
 	}

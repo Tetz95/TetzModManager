@@ -282,7 +282,27 @@ public partial class MainWindow : Window
 		}
 		LogBox.AppendText($"{DateTime.Now:HH:mm:ss} {line}{Environment.NewLine}");
 		LogBox.ScrollToEnd();
+		// Also to %APPDATA%\TetzModManager\log.txt (the previous run's in log.old.txt), for looking back after closing.
+		try
+		{
+			if (!_logStarted)
+			{
+				_logStarted = true;
+				Directory.CreateDirectory(Settings.DataDir);
+				if (File.Exists(LogPath))
+				{
+					File.Move(LogPath, Path.Combine(Settings.DataDir, "log.old.txt"), true);
+				}
+			}
+			File.AppendAllText(LogPath, $"{DateTime.Now:yyyy-MM-dd HH:mm:ss} {line}{Environment.NewLine}");
+		}
+		catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+		{
+		}
 	}
+
+	private bool _logStarted;
+	private static string LogPath => Path.Combine(Settings.DataDir, "log.txt");
 
 	// ---- running work off the UI thread ----
 
@@ -290,7 +310,7 @@ public partial class MainWindow : Window
 	{
 		if (_busy)
 		{
-			Log($"Busy: {what} waits for the current job.");
+			Log($"Busy: {what} not started. Try again once the current job has finished.");
 			return;
 		}
 		_busy = true;
@@ -401,7 +421,7 @@ public partial class MainWindow : Window
 			PlanAction.Update => p.Reason ?? "update",
 			PlanAction.Reinstall => "same version, copied again",
 			PlanAction.Downgrade => "OLDER than the installed one",
-			PlanAction.KeepInstalled => $"shared, left as it is: {p.Reason}",
+			PlanAction.KeepInstalled => $"{(p.Shared ? "shared, " : "")}left as it is: {p.Reason}",
 			_ => $"skipped: {p.Reason}",
 		};
 		return $"{(p.Copies ? "•" : "–")} {p.Manifest.Name} {version} ({what})";
@@ -410,15 +430,16 @@ public partial class MainWindow : Window
 	/// <summary>Each mod of the archive as its own package; always asks first, listing them all.</summary>
 	private async Task InstallSeparately(string path, InstallPlan plan, ScanResult installed)
 	{
-		List<InstallPlan> plans = Installer.Split(_settings, plan, installed, _state);
+		List<InstallPlan> plans = Installer.Split(_settings, plan, installed, _state, out List<PlannedMod> skipped);
 		try
 		{
 			List<string> lines = plans.Select(s => Describe(s.Mods[0]) + (s.Package != null ? "  [its own package]" : "  [new package]")).ToList();
-			lines.AddRange(plan.Mods.Where(m => !m.Copies).Select(Describe));
+			lines.AddRange(skipped.Select(Describe));
 			string name = Path.GetFileName(path.TrimEnd('\\'));
 			if (plans.Count == 0)
 			{
-				Log($"{name}: nothing to install ({string.Join("; ", lines)})");
+				Log($"{name}: nothing to install");
+				lines.ForEach(l => Log("  " + l));
 				return;
 			}
 			if (MessageBox.Show(this, $"{name}\nEach mod as its own package:\n\n{string.Join("\n", lines)}\n\nGo ahead?",
