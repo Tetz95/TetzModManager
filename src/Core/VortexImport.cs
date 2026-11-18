@@ -89,10 +89,11 @@ public static partial class VortexImport
 			{
 				Directory.CreateDirectory(settings.ArchiveDir);
 				string name = d.NexusVersion != null && !d.Name.EndsWith(d.NexusVersion, StringComparison.OrdinalIgnoreCase) ? $"{d.Name} {d.NexusVersion}" : d.Name;
-				string dest = Path.Combine(settings.ArchiveDir, string.Concat(name.Select(c => Path.GetInvalidFileNameChars().Contains(c) ? '_' : c)) + ".zip");
-				if (!File.Exists(dest))
+				// Two downloads can share a name (two "Colourable 1.0.1" packs): never point a package at another's archive.
+				string dest = ModArchive.FreeName(settings, state, rec, string.Concat(name.Select(c => Path.GetInvalidFileNameChars().Contains(c) ? '_' : c)) + ".zip");
+				if (!File.Exists(dest) || new FileInfo(dest).Length != new FileInfo(d.Path).Length)
 				{
-					File.Copy(d.Path, dest);
+					File.Copy(d.Path, dest, true);
 				}
 				ModArchive.Replace(state, rec, dest);
 				archived++;

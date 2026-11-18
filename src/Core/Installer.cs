@@ -418,12 +418,7 @@ public static class ModArchive
 		string fileName = name ?? (plan.IsFolder
 			? Safe($"{plan.Name} {plan.Mods.FirstOrDefault(m => !m.Shared)?.Manifest.Version ?? plan.Mods.FirstOrDefault()?.Manifest.Version}".Trim()) + ".zip"
 			: Path.GetFileName(plan.SourcePath));
-		string dest = Path.Combine(settings.ArchiveDir, fileName);
-		// Another package's archive with the same name stays: this one gets a numbered name.
-		for (int n = 2; state.Packages.Any(p => p != rec && string.Equals(p.Archive, dest, StringComparison.OrdinalIgnoreCase)); n++)
-		{
-			dest = Path.Combine(settings.ArchiveDir, $"{Path.GetFileNameWithoutExtension(fileName)} ({n}){Path.GetExtension(fileName)}");
-		}
+		string dest = FreeName(settings, state, rec, fileName);
 		if (plan.IsFolder)
 		{
 			File.Delete(dest);
@@ -434,6 +429,17 @@ public static class ModArchive
 			File.Copy(plan.SourcePath, dest, true);
 		}
 		Replace(state, rec, dest);
+		return dest;
+	}
+
+	/// <summary>The archive path for a file name: another package's archive with the same name stays, this one gets a numbered name.</summary>
+	public static string FreeName(Settings settings, StateStore state, PackageRecord rec, string fileName)
+	{
+		string dest = Path.Combine(settings.ArchiveDir, fileName);
+		for (int n = 2; state.Packages.Any(p => p != rec && string.Equals(p.Archive, dest, StringComparison.OrdinalIgnoreCase)); n++)
+		{
+			dest = Path.Combine(settings.ArchiveDir, $"{Path.GetFileNameWithoutExtension(fileName)} ({n}){Path.GetExtension(fileName)}");
+		}
 		return dest;
 	}
 
