@@ -85,7 +85,11 @@ public partial class MainWindow : Window
 		}
 		Refresh();
 		ShowGameStatus();
-		Log($"Mods: {_settings.ModsDir}");
+		Log($"Mods: {_settings.ModsDir}" + (string.IsNullOrWhiteSpace(_settings.HomeDir) ? $" ({Steam.DetectHome().From})" : " (set in Settings)"));
+		if (Steam.GameDir() is string game)
+		{
+			Log($"Game: {game}");
+		}
 		Log($"Archive: {_settings.ArchiveDir}");
 		if (_state.Packages.Count == 0)
 		{
@@ -310,28 +314,29 @@ public partial class MainWindow : Window
 	/// Installs an archive or folder. Asks first only when something needs a look: an older version, a Vortex folder, a
 	/// blocked folder, or an add-on.
 	/// </summary>
-	private async Task Install(string path, NexusSource? nexus)
+	private async Task Install(string path, NexusSource? nexus, bool separate = false)
 	{
 		ScanResult installed = Scanner.Scan(_settings, null, _state);
 		InstallPlan plan = await Task.Run(() => Installer.Plan(_settings, path, installed, _state, nexus?.ModId));
+		if (separate)
+		{
+			try
+			{
+				await InstallSeparately(path, plan, installed);
+			}
+			finally
+			{
+				plan.Dispose();
+			}
+			return;
+		}
 		try
 		{
 			List<string> lines = [];
 			bool ask = plan.Overlays.Count > 0;
 			foreach (PlannedMod p in plan.Mods)
 			{
-				string folder = Path.GetFileName(p.Target);
-				string version = p.Existing != null && p.Existing.Manifest.Version != p.Manifest.Version ? $"{p.Existing.Manifest.Version} → {p.Manifest.Version}" : p.Manifest.Version;
-				string what = p.Action switch
-				{
-					PlanAction.Install => $"new, folder \"{folder}\"",
-					PlanAction.Update => "update",
-					PlanAction.Reinstall => "same version, copied again",
-					PlanAction.Downgrade => "OLDER than the installed one",
-					PlanAction.KeepInstalled => $"shared, left as it is: {p.Reason}",
-					_ => $"skipped: {p.Reason}",
-				};
-				lines.Add($"{(p.Copies ? "•" : "–")} {p.Manifest.Name} {version} ({what})");
+				lines.Add(Describe(p));
 				ask |= p.Action is PlanAction.Downgrade or PlanAction.Blocked;
 				if (p.ReplacesVortexFolder)
 				{
@@ -356,6 +361,54 @@ public partial class MainWindow : Window
 		finally
 		{
 			plan.Dispose();
+		}
+	}
+
+	private static string Describe(PlannedMod p)
+	{
+		string folder = Path.GetFileName(p.Target);
+		string version = p.Existing != null && p.Existing.Manifest.Version != p.Manifest.Version ? $"{p.Existing.Manifest.Version} → {p.Manifest.Version}" : p.Manifest.Version;
+		string what = p.Action switch
+		{
+			PlanAction.Install => $"new, folder \"{folder}\"",
+			PlanAction.Update => p.Reason ?? "update",
+			PlanAction.Reinstall => "same version, copied again",
+			PlanAction.Downgrade => "OLDER than the installed one",
+			PlanAction.KeepInstalled => $"shared, left as it is: {p.Reason}",
+			_ => $"skipped: {p.Reason}",
+		};
+		return $"{(p.Copies ? "•" : "–")} {p.Manifest.Name} {version} ({what})";
+	}
+
+	/// <summary>Each mod of the archive as its own package; always asks first, listing them all.</summary>
+	private async Task InstallSeparately(string path, InstallPlan plan, ScanResult installed)
+	{
+		List<InstallPlan> plans = Installer.Split(_settings, plan, installed, _state);
+		try
+		{
+			List<string> lines = plans.Select(s => Describe(s.Mods[0]) + (s.Package != null ? "  [its own package]" : "  [new package]")).ToList();
+			lines.AddRange(plan.Mods.Where(m => !m.Copies).Select(Describe));
+			string name = Path.GetFileName(path.TrimEnd('\\'));
+			if (plans.Count == 0)
+			{
+				Log($"{name}: nothing to install ({string.Join("; ", lines)})");
+				return;
+			}
+			if (MessageBox.Show(this, $"{name}\nEach mod as its own package:\n\n{string.Join("\n", lines)}\n\nGo ahead?",
+				"Install as separate mods", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes)
+			{
+				Log($"Not installed: {name}");
+				return;
+			}
+			Log($"{name}: {plans.Count} mods as separate packages");
+			foreach (InstallPlan s in plans)
+			{
+				await Task.Run(() => Installer.Apply(_settings, _state, s, null, Log));
+			}
+		}
+		finally
+		{
+			plans.ForEach(s => s.Dispose());
 		}
 	}
 
@@ -425,7 +478,7 @@ public partial class MainWindow : Window
 		await Run("Nexus download", () => DownloadAndInstall(nexus, link.ModId, link.FileId, link.Key, link.Expires));
 	}
 
-	private async Task InstallAll(IEnumerable<string> paths)
+	private async Task InstallAll(IEnumerable<string> paths, bool separate = false)
 	{
 		if (!GameClosedOrSay())
 		{
@@ -435,9 +488,23 @@ public partial class MainWindow : Window
 		{
 			foreach (string p in paths)
 			{
-				await Install(p, null);
+				await Install(p, null, separate);
 			}
 		});
+	}
+
+	/// <summary>A bundle of separate mods (Freeman's test zips): each mod becomes its own package.</summary>
+	private async void OnInstallSeparately(object sender, RoutedEventArgs e)
+	{
+		OpenFileDialog dlg = new()
+		{
+			Filter = "Mod archives|*.zip;*.7z;*.rar|All files|*.*",
+			Title = "An archive holding separate mods: each is installed as its own package",
+		};
+		if (dlg.ShowDialog(this) == true)
+		{
+			await InstallAll(dlg.FileNames, separate: true);
+		}
 	}
 
 	private async void OnInstallArchive(object sender, RoutedEventArgs e)

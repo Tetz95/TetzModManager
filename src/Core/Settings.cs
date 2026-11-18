@@ -5,17 +5,26 @@ namespace TetzModManager;
 /// <summary>User settings, kept in %APPDATA%\TetzModManager\settings.json.</summary>
 public sealed class Settings
 {
-	/// <summary>The game's home folder: Mods and Preferences.json live here.</summary>
-	public string HomeDir { get; set; } = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "Railroader");
+	/// <summary>
+	/// The game's home folder (Mods, Preferences.json) when set here; blank follows the game: Steam's -homedir launch
+	/// option, else Documents\Railroader.
+	/// </summary>
+	public string HomeDir { get; set; } = "";
+
+	/// <summary>The home folder in use: <see cref="HomeDir"/> when set, else detected (read once per run).</summary>
+	[System.Text.Json.Serialization.JsonIgnore]
+	public string GameHome => string.IsNullOrWhiteSpace(HomeDir) ? (_detected ??= Steam.DetectHome().Path) : HomeDir;
+
+	private string? _detected;
 
 	/// <summary>Where downloaded and installed zips are kept, at most one per mod.</summary>
-	public string ArchiveDir { get; set; } = @"D:\Railroader Mod Archive";
+	public string ArchiveDir { get; set; } = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "Railroader Mod Archive");
 
 	/// <summary>A text file holding the Nexus Mods API key (never shown or logged).</summary>
 	public string NexusKeyFile { get; set; } = "";
 
 	/// <summary>Vortex's download folder for Railroader, read once to link installed mods to Nexus.</summary>
-	public string VortexDownloadsDir { get; set; } = @"D:\Vortex Mods\Downloads\railroader";
+	public string VortexDownloadsDir { get; set; } = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Vortex", "downloads", "railroader");
 
 	/// <summary>The nxm handler command that was registered before ours (Vortex's), for links of other games.</summary>
 	public string PreviousNxmCommand { get; set; } = "";
@@ -23,8 +32,8 @@ public sealed class Settings
 	/// <summary>The game's process name, checked before anything in Mods or Preferences.json is changed.</summary>
 	public string GameProcess { get; set; } = "Railroader";
 
-	public string ModsDir => Path.Combine(HomeDir, "Mods");
-	public string PreferencesPath => Path.Combine(HomeDir, "Preferences.json");
+	public string ModsDir => Path.Combine(GameHome, "Mods");
+	public string PreferencesPath => Path.Combine(GameHome, "Preferences.json");
 
 	// TETZMM_DATA moves all of the tool's own files (settings, state, rollback copies) elsewhere: tests.
 	private static string? Override => Environment.GetEnvironmentVariable("TETZMM_DATA");

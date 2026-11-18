@@ -90,7 +90,9 @@ public sealed class SettingsWindow : Window
 			row += 2;
 			return t;
 		}
-		_home = Field("Game home folder", settings.HomeDir, false, "Holds Mods and Preferences.json.");
+		(string detected, string from) = Steam.DetectHome();
+		_home = Field("Game home folder", settings.HomeDir, false,
+			$"Holds Mods and Preferences.json. Leave blank to follow the game: now {detected} ({from}).");
 		_archive = Field("Archive folder", settings.ArchiveDir, false, "Every installed archive is kept here, the newest one per mod.");
 		_key = Field("Nexus API key file", settings.NexusKeyFile, true, "A text file with your personal API key (nexusmods.com > Site preferences > API keys). Sent only to api.nexusmods.com.");
 		_vortex = Field("Vortex downloads", settings.VortexDownloadsDir, false, "Vortex's Railroader download folder: used once to link installed mods to their Nexus pages.");

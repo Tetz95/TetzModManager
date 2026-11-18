@@ -24,6 +24,7 @@
         <Button Content="Refresh" Click="OnRefresh" ToolTip="Read the Mods folder and Preferences.json again" />
         <Button Content="Install archive..." Click="OnInstallArchive" ToolTip="Install from a zip, 7z or rar. Archives and folders dropped on the window install too." />
         <Button Content="Install folder..." Click="OnInstallFolder" ToolTip="Install an unzipped download (a folder holding one or more mod folders)" />
+        <Button Content="Install as separate mods..." Click="OnInstallSeparately" ToolTip="An archive that is only a bundle of separate mods (Freeman's test zips): each mod becomes its own package with its own archive" />
         <Separator />
         <Button Content="Check for updates" Click="OnCheckUpdates" ToolTip="Ask Nexus for the newest file of every linked package" />
         <Button x:Name="UpdateAllButton" Content="Update all" Click="OnUpdateAll" IsEnabled="False" />

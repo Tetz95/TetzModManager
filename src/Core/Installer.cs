@@ -124,6 +124,27 @@ public static class Installer
 		return plan;
 	}
 
+	/// <summary>
+	/// One plan per mod of an extracted archive, for archives that are only a bundle of separate mods (Freeman's test
+	/// zips): each becomes its own package, archived as a zip of its folder. Mods with nothing to copy (blocked, or
+	/// shared and already installed) are left out. The plans use the archive's extracted folders: dispose the parent
+	/// plan only after applying them.
+	/// </summary>
+	public static List<InstallPlan> Split(Settings settings, InstallPlan plan, ScanResult installed, StateStore state)
+	{
+		List<InstallPlan> plans = [];
+		foreach (PlannedMod m in plan.Mods.Where(m => m.Copies))
+		{
+			InstallPlan sub = new() { SourcePath = m.Source, IsFolder = true, ExtractDir = m.Source, OwnsExtractDir = false };
+			sub.Package = state.Match([m.Manifest],
+				k => installed.Mods.FirstOrDefault(i => string.Equals(i.Key, k, StringComparison.OrdinalIgnoreCase))?.Manifest);
+			sub.Mods.Add(PlanMod(settings, sub, m.Source, m.Manifest, installed, state));
+			sub.Name = m.Manifest.Name;
+			plans.Add(sub);
+		}
+		return plans;
+	}
+
 	private static PlannedMod PlanMod(Settings settings, InstallPlan plan, string root, ModManifest m, ScanResult installed, StateStore state)
 	{
 		InstalledMod? existing = installed.Mods.FirstOrDefault(i => string.Equals(i.Key, m.Key, StringComparison.OrdinalIgnoreCase));
@@ -146,12 +167,12 @@ public static class Installer
 		bool shared = state.WithMember(m.Key).Any(p => p != plan.Package
 			&& installed.Packages.Any(ip => ip.Record == p && ip.Members.Count > 0));
 		int c = Versions.Compare(m.Version, existing.Manifest.Version);
-		if (shared && c == 0 && NewerBuild(root, existing.Folder) is DateTime built)
+		if (c == 0 && NewerBuild(root, existing.Folder) is DateTime built)
 		{
 			// Test builds often keep their version (Freeman's 1.0.0 packs): newer files under the same version are an update.
 			return new PlannedMod
 			{
-				Manifest = m, Source = root, Target = target, Existing = existing, Shared = true, Action = PlanAction.Update,
+				Manifest = m, Source = root, Target = target, Existing = existing, Shared = shared, Action = PlanAction.Update,
 				Reason = $"same version, newer build ({built:yyyy-MM-dd HH:mm})",
 			};
 		}

@@ -1,59 +1,78 @@
 # Tetz's Mod Manager
 
-A personal mod manager for Railroader 0.6 (2026.1): a Windows window (WPF, .NET 10) that installs mods into the game's
-home folder, keeps Preferences.json in step, checks Nexus for updates and keeps every installed archive.
+A mod manager for Railroader 0.6 on Windows. It installs mods into the game's home folder, keeps Preferences.json in
+step, checks Nexus Mods for updates, handles Nexus "Mod Manager Download" links, and keeps a copy of every installed
+archive.
+
+It's a personal tool shared as is: it works for my game, it may not cover yours. Back up your Mods folder and
+Preferences.json before trying it.
+
+## Requirements
+
+- Windows 10/11 and the [.NET 10 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/10.0).
+- For updates and Nexus downloads: your personal Nexus Mods API key, saved in a text file
+  (nexusmods.com > Site preferences > API keys). Downloads through the API need a Premium account; free accounts can
+  still use the "Mod Manager Download" button on a mod's page.
+- For 7z and rar archives: [7-Zip](https://www.7-zip.org/) in `C:\Program Files\7-Zip`.
+
+## Install
+
+Unzip the release anywhere and run `TetzModManager.exe`. Open **Settings...** to choose the archive folder and the API
+key file, and to make Nexus links open here ("Handle Nexus links here"; links for other games are passed on to the
+handler that was there before, and "Give Nexus links back" restores it).
 
 ## What it does
 
 - **The list comes from the mods themselves.** Each folder in `Mods` is read from its `Info.json` (identifier, name,
-  version, author, dependencies), or an old Unity Mod Manager `info.json` (`Id`, `DisplayName`). A mod is known by its
-  identifier, never by its folder name or the name of the archive it came in, so the same mod under two names is one
-  mod. Nexus details stay behind it, in `%APPDATA%\TetzModManager\state.json`.
+  version, author, dependencies). A mod is known by its identifier, never by its folder name or the name of the archive
+  it came in, so the same mod under two names is one mod.
+- **The game's home folder** is found the way the game finds it: Steam's `-homedir` launch option when set, else
+  `Documents\Railroader`. A folder set in Settings overrides it.
 - **Packages.** The list shows packages: what one archive (or unzipped folder) installed. One archive can hold several
-  mods, at any depth (the game reads only Mods' top folders, so each becomes its own folder there):
-  - SCOLD is one row with its three folders; Freeman's GP60 pack one row with three; LIRR GT-1's two nested mods one.
-    The details pane lists each mod, with its own enable box.
-  - A package is named after the mod whose name best matches the archive's ("SD38-2 and GP38Scripts" -> SD38-2).
-  - **Shared mods**: BMAN bundles his GP38Scripts (and the Blomberg trucks) with each pack. Such a mod belongs to every
-    package carrying it; installing a pack never puts an older copy over a newer one; uninstalling a pack keeps it
-    while another installed package carries it.
-  - A new archive updates the installed package with the same **core** (the mods no other mod in the archive
-    requires): bundled parts don't make two packs one (BMAN's GP38 and GP40 packs share two of their three mods), and
-    packages from different Nexus pages never match.
-  - **Add-ons**: an archive without an Info.json whose top folder is an installed mod's folder (Freeman's RTB
-    placards for RexsToolBox) puts its files into that folder. They are put back whenever that mod is reinstalled or
-    updated, and removed with the add-on.
-- **Installs** from an archive (zip; 7z/rar through 7-Zip) or an unzipped folder (both can be dropped on the window),
-  or a Nexus link:
+  mods, at any depth (the game reads only Mods' top folders, so each becomes its own folder there). The details pane
+  lists each mod, with its own enable box.
+  - **Shared mods**: some authors bundle a library with each of their packs. Such a mod belongs to every package
+    carrying it; installing a pack never puts an older copy over a newer one; uninstalling a pack keeps it while another
+    installed package carries it.
+  - A new archive updates the installed package with the same **core** (the mods no other mod in the archive requires),
+    so bundled parts don't merge two packs, and packages from different Nexus pages never match.
+  - **Add-ons**: an archive without an `Info.json` whose top folder is an installed mod's folder (extra files for
+    another mod) puts its files into that folder. They are put back whenever that mod is reinstalled or updated, and
+    removed with the add-on.
+  - **Install as separate mods...** installs an archive that is only a bundle of unrelated mods (a test pack) as one
+    package per mod.
+- **Installs** from an archive (zip; 7z/rar through 7-Zip), an unzipped folder (both can be dropped on the window), or a
+  Nexus link:
   - an installed mod is replaced in its own folder; a new one gets the archive's folder name;
-  - plain copies, no hardlinks; each replaced folder is kept for **Roll back** (one earlier version per mod, in
-    `%LOCALAPPDATA%\TetzModManager\previous`);
-  - Preferences.json gets the new version, or a new entry (enabled, scope 0; client mods in `clientMods`). Everything
-    else in the file is written back as it was (two-space indent, its own line endings); the last 20 versions of the
-    file are kept in `%APPDATA%\TetzModManager\preferences-backups`;
-  - nothing is changed while Railroader runs; it asks first for an older version, a Vortex folder, a blocked folder or
-    an add-on.
-- **Archive**: each package's archive is copied to the archive folder (default `D:\Railroader Mod Archive`; a folder
-  install is zipped); the package's previous archive is deleted, so there is one per package.
-- **Import from Vortex** groups the installed mods into packages from Vortex's downloads (each mod belongs to the
-  newest download holding it; Vortex names them `<name> <mod id> <version> <timestamp> <id>.zip`), links them to Nexus,
-  and can copy those downloads into the archive. **Check for updates** matches each package to its Nexus file (by the
-  Nexus version known from the download, else by the Info.json version; `1.0` = `1.0.0`) and follows Nexus's
-  file-update chain to the newest file. **Update** downloads it with the API key (Premium: no nxm key needed).
-- **nxm links** (Settings > "Handle Nexus links here"): Windows sends `nxm://` links here; links for other games go to
-  the handler that was there before (Vortex), and "Give Nexus links back" restores it.
-- **Notes**: the same mod in two folders, not in Preferences.json while nothing enabled needs it (libraries required
-  by an enabled mod load without an entry), Preferences.json version differing from the folder's, a missing or disabled
-  required mod, an enabled incompatible mod, a game-version pin, a package member missing from Mods.
+  - a mod with the same version but newer files (test builds often keep their version) counts as an update;
+  - each replaced folder is kept for **Roll back** (one earlier version per mod);
+  - Preferences.json gets the new version, or a new enabled entry. Everything else in the file is written back as it
+    was; the last 20 versions of the file are kept in `%APPDATA%\TetzModManager\preferences-backups`;
+  - nothing is changed while Railroader runs; it asks first for an older version, a blocked folder or an add-on.
+- **Archive**: each package's archive is copied to the archive folder (a folder install is zipped); the package's
+  previous archive is deleted, so there is one per package.
+- **Check for updates** matches each package to its Nexus file and follows Nexus's file-update chain to the newest file.
+  **Update** downloads and installs it.
+- **Import from Vortex** groups the installed mods into packages from Vortex's Railroader downloads and links them to
+  Nexus (Vortex names downloads `<name> <mod id> <version> <timestamp> <id>.zip`); it can copy those downloads into the
+  archive. Before leaving Vortex, note that removing a game from Vortex deletes every file it deployed: copy the
+  deployed mods out first.
+- **Notes** flag the same mod in two folders, a mod not in Preferences.json while nothing enabled needs it, a
+  Preferences.json version differing from the folder's, a missing or disabled required mod, an enabled incompatible mod,
+  a game-version pin, and a package member missing from Mods.
 
-## Build, test, install
+Its own files: `%APPDATA%\TetzModManager` (settings, package list, Preferences.json backups) and
+`%LOCALAPPDATA%\TetzModManager` (rollback copies, work folder).
+
+## Build
 
 ```bash
 dotnet build TetzModManager.sln
-# smoke test: reads the real home folder, installs into a throwaway one
-TETZMM_DATA=<scratch> dotnet run --project tools/SmokeTest -- "<home>" "<Vortex downloads>" "<LT zip>" "<older LT zip>" [key file]
-# install to %LOCALAPPDATA%\Programs\TetzModManager (close it first; publish fails on a folder name with an apostrophe)
-dotnet publish src/App/App.csproj -c Release -o "$LOCALAPPDATA/Programs/TetzModManager"
+dotnet publish src/App/App.csproj -c Release -o <folder>   # the folder name must not contain an apostrophe
+# release build: no debug files or local paths in the DLLs
+dotnet publish src/App/App.csproj -c Release -o <folder> -p:DebugType=none -p:DebugSymbols=false "-p:PathMap=<repo folder>=."
+# smoke test: reads a real home folder, installs into a throwaway one
+TETZMM_DATA=<scratch> dotnet run --project tools/SmokeTest -- "<home>" "<Vortex downloads>" "<mod zip>" "<older zip of that mod>" [key file]
 ```
 
 `TETZMM_DATA` moves all of the tool's own files (settings, state, rollback copies, work folder) for tests;
