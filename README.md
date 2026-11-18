@@ -57,6 +57,9 @@ handler that was there before, and "Give Nexus links back" restores it).
   Nexus (Vortex names downloads `<name> <mod id> <version> <timestamp> <id>.zip`); it can copy those downloads into the
   archive. Before leaving Vortex, note that removing a game from Vortex deletes every file it deployed: copy the
   deployed mods out first.
+- **Right-click menus**: on a package, Update, Enable/Disable (several packages at once), Open folder, Show archive
+  in Explorer, Nexus page, Link to Nexus, Copy name/identifiers, Roll back and Uninstall; on a mod in the details
+  pane, Enable/Disable, Open folder and Copy identifier.
 - **Notes** flag the same mod in two folders, a mod not in Preferences.json while nothing enabled needs it, a
   Preferences.json version differing from the folder's, a missing or disabled required mod, an enabled incompatible mod,
   a game-version pin, and a package member missing from Mods.

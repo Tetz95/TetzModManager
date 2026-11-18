@@ -72,7 +72,26 @@
       </StackPanel>
       <DataGrid x:Name="Grid" Grid.Row="1" AutoGenerateColumns="False" IsReadOnly="True" SelectionMode="Extended"
                 CanUserAddRows="False" HeadersVisibility="Column" GridLinesVisibility="Horizontal"
-                HorizontalGridLinesBrush="#DDD" SelectionChanged="OnSelectionChanged" RowStyle="{StaticResource RowStyle}">
+                HorizontalGridLinesBrush="#DDD" SelectionChanged="OnSelectionChanged" RowStyle="{StaticResource RowStyle}"
+                PreviewMouseRightButtonDown="OnRowRightClick" ContextMenuOpening="OnPackageMenuOpening">
+        <DataGrid.ContextMenu>
+          <ContextMenu>
+            <MenuItem x:Name="MenuUpdate" Header="Update" Click="OnUpdateSelected" />
+            <MenuItem x:Name="MenuEnable" Header="Enable" Click="OnMenuEnable" />
+            <MenuItem x:Name="MenuDisable" Header="Disable" Click="OnMenuDisable" />
+            <Separator />
+            <MenuItem x:Name="MenuFolder" Header="Open folder" Click="OnOpenFolder" />
+            <MenuItem x:Name="MenuArchive" Header="Show archive in Explorer" Click="OnShowArchive" />
+            <MenuItem x:Name="MenuNexus" Header="Nexus page" Click="OnNexusPage" />
+            <MenuItem x:Name="MenuLink" Header="Link to Nexus..." Click="OnLink" />
+            <Separator />
+            <MenuItem x:Name="MenuCopyName" Header="Copy name" Click="OnCopyName" />
+            <MenuItem x:Name="MenuCopyIds" Header="Copy identifiers" Click="OnCopyIds" />
+            <Separator />
+            <MenuItem x:Name="MenuRollBack" Header="Roll back" Click="OnRollBack" />
+            <MenuItem x:Name="MenuUninstall" Header="Uninstall..." Click="OnUninstall" />
+          </ContextMenu>
+        </DataGrid.ContextMenu>
         <DataGrid.Columns>
           <DataGridTemplateColumn Header="On" SortMemberPath="EnabledSort" Width="38">
             <DataGridTemplateColumn.CellTemplate>
@@ -110,7 +129,15 @@
           <TextBox x:Name="Details" DockPanel.Dock="Top" IsReadOnly="True" TextWrapping="Wrap" BorderThickness="0" Background="Transparent"
                    MaxHeight="120" VerticalScrollBarVisibility="Auto" />
           <DataGrid x:Name="MembersGrid" AutoGenerateColumns="False" IsReadOnly="True" HeadersVisibility="Column" Margin="0,6,0,0"
-                    GridLinesVisibility="Horizontal" HorizontalGridLinesBrush="#DDD" RowStyle="{StaticResource RowStyle}">
+                    GridLinesVisibility="Horizontal" HorizontalGridLinesBrush="#DDD" RowStyle="{StaticResource RowStyle}"
+                    PreviewMouseRightButtonDown="OnRowRightClick" ContextMenuOpening="OnMemberMenuOpening">
+            <DataGrid.ContextMenu>
+              <ContextMenu>
+                <MenuItem x:Name="MemberMenuToggle" Header="Disable" Click="OnMemberMenuToggle" />
+                <MenuItem Header="Open folder" Click="OnOpenFolder" />
+                <MenuItem Header="Copy identifier" Click="OnCopyMemberId" />
+              </ContextMenu>
+            </DataGrid.ContextMenu>
             <DataGrid.Columns>
               <DataGridTemplateColumn Header="On" Width="38">
                 <DataGridTemplateColumn.CellTemplate>

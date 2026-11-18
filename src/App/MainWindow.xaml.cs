@@ -743,6 +743,120 @@ public partial class MainWindow : Window
 		}
 	}
 
+	// ---- right-click menus ----
+
+	/// <summary>Right-clicking a row that isn't selected selects it alone (the menu then acts on it).</summary>
+	private void OnRowRightClick(object sender, System.Windows.Input.MouseButtonEventArgs e)
+	{
+		DependencyObject? d = e.OriginalSource as DependencyObject;
+		while (d != null && d is not DataGridRow)
+		{
+			d = d is System.Windows.Media.Visual or System.Windows.Media.Media3D.Visual3D ? System.Windows.Media.VisualTreeHelper.GetParent(d) : LogicalTreeHelper.GetParent(d);
+		}
+		if (d is DataGridRow { IsSelected: false } row && sender is DataGrid grid)
+		{
+			grid.SelectedItems.Clear();
+			row.IsSelected = true;
+			row.Focus();
+		}
+	}
+
+	private void OnPackageMenuOpening(object sender, ContextMenuEventArgs e)
+	{
+		List<PackageRow> sel = Selected;
+		if (sel.Count == 0)
+		{
+			e.Handled = true;
+			return;
+		}
+		PackageRow? row = sel.Count == 1 ? sel[0] : null;
+		MenuUpdate.IsEnabled = UpdateButton.IsEnabled;
+		MenuEnable.IsEnabled = sel.Any(r => r.CanToggle && r.Enabled != true);
+		MenuDisable.IsEnabled = sel.Any(r => r.CanToggle && r.Enabled != false);
+		MenuFolder.IsEnabled = FolderButton.IsEnabled;
+		MenuArchive.IsEnabled = row?.Package.Record?.Archive is string a && File.Exists(a);
+		MenuNexus.IsEnabled = NexusButton.IsEnabled;
+		MenuLink.IsEnabled = LinkButton.IsEnabled;
+		MenuCopyIds.IsEnabled = sel.Any(r => r.Package.Members.Count > 0);
+		MenuRollBack.IsEnabled = RollBackButton.IsEnabled;
+		MenuUninstall.IsEnabled = UninstallButton.IsEnabled;
+		string many = sel.Count > 1 ? $" ({sel.Count} packages)" : "";
+		MenuEnable.Header = "Enable" + many;
+		MenuDisable.Header = "Disable" + many;
+		MenuUpdate.Header = sel.Count(r => r.UpdateAvailable) > 1 ? $"Update ({sel.Count(r => r.UpdateAvailable)} packages)" : "Update";
+	}
+
+	private void OnMenuEnable(object sender, RoutedEventArgs e) => SetPackagesEnabled(true);
+
+	private void OnMenuDisable(object sender, RoutedEventArgs e) => SetPackagesEnabled(false);
+
+	private void SetPackagesEnabled(bool on)
+	{
+		List<PackageRow> rows = Selected.Where(r => r.CanToggle).ToList();
+		List<InstalledMod> mods = rows.SelectMany(r => r.Package.Own).DistinctBy(m => m.Key).ToList();
+		if (mods.Count > 0)
+		{
+			SetEnabled(mods, on, rows.Count == 1 ? rows[0].Name : $"{rows.Count} packages");
+		}
+	}
+
+	private void OnShowArchive(object sender, RoutedEventArgs e)
+	{
+		if (Selected.FirstOrDefault()?.Package.Record?.Archive is string a && File.Exists(a))
+		{
+			Process.Start("explorer.exe", $"/select,\"{a}\"");
+		}
+	}
+
+	private void OnCopyName(object sender, RoutedEventArgs e) => CopyText(string.Join(Environment.NewLine, Selected.Select(r => r.Name)));
+
+	private void OnCopyIds(object sender, RoutedEventArgs e) =>
+		CopyText(string.Join(Environment.NewLine, Selected.SelectMany(r => r.Package.Members).Select(m => m.Manifest.Identifier ?? m.Key).Distinct()));
+
+	private void OnMemberMenuOpening(object sender, ContextMenuEventArgs e)
+	{
+		if (MembersGrid.SelectedItem is not MemberRow m)
+		{
+			e.Handled = true;
+			return;
+		}
+		MemberMenuToggle.Header = m.Mod.Enabled == false ? "Enable" : "Disable";
+		MemberMenuToggle.IsEnabled = m.CanToggle;
+	}
+
+	private void OnMemberMenuToggle(object sender, RoutedEventArgs e)
+	{
+		if (MembersGrid.SelectedItem is MemberRow m)
+		{
+			SetEnabled([m.Mod], m.Mod.Enabled == false, m.Name);
+		}
+	}
+
+	private void OnCopyMemberId(object sender, RoutedEventArgs e)
+	{
+		if (MembersGrid.SelectedItem is MemberRow m)
+		{
+			CopyText(m.Key);
+		}
+	}
+
+	private void CopyText(string text)
+	{
+		if (text.Length == 0)
+		{
+			return;
+		}
+		try
+		{
+			Clipboard.SetText(text);
+		}
+		catch (System.Runtime.InteropServices.COMException)
+		{
+			// The clipboard is busy (another program holds it): try once more.
+			Clipboard.SetDataObject(text, true);
+		}
+	}
+
 	// ---- folders, settings ----
 
 	private void OnRefresh(object sender, RoutedEventArgs e)
