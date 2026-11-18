@@ -7,31 +7,66 @@ using Microsoft.Win32;
 
 namespace TetzModManager.App;
 
-/// <summary>A row of the list: what the mod says about itself, with its Nexus details behind it.</summary>
-public sealed class ModRow(InstalledMod mod)
+/// <summary>A row of the list: a package, named after its main mod, with its Nexus details behind it.</summary>
+public sealed class PackageRow(InstalledPackage p)
 {
-	public InstalledMod Mod { get; } = mod;
-	public string Name => Mod.Manifest.Name;
-	public string Version => Mod.InstalledVersion != Mod.Manifest.Version ? $"{Mod.Manifest.Version} ({Mod.InstalledVersion})" : Mod.Manifest.Version;
-	public string Latest => Mod.Record?.LatestVersion ?? "";
-	public string Author => Mod.Manifest.Author;
-	public string Key => Mod.Manifest.Identifier ?? Mod.Key;
-	public string NexusId => Mod.Record?.NexusModId?.ToString() ?? "";
-	public bool? Enabled => Mod.LoadedAsDependency ? true : Mod.Enabled;
+	public InstalledPackage Package { get; } = p;
+	public string Name => Package.Name;
+	public string Version => Package.Record?.IsAddOn == true ? Package.Record.InstalledNexusVersion ?? ""
+		: !Versions.Same(Package.InstalledVersion, Package.Version) ? $"{Package.Version} ({Package.InstalledVersion})" : Package.Version;
+	public string Latest => Package.Record?.LatestVersion ?? "";
+	public string Author => Package.Author;
+	public string Contents => Package.Record?.IsAddOn == true ? "add-on for " + string.Join(", ", Package.Record.Overlays.Keys)
+		: Package.Members.Count == 1 ? Package.Members[0].Manifest.Identifier ?? Package.Members[0].Key
+		: $"{Package.Members.Count} mods" + (Package.Shared.Count > 0 ? $" ({Package.Shared.Count} shared)" : "");
+	public string NexusId => Package.Record?.NexusModId?.ToString() ?? "";
+
+	private List<InstalledMod> Toggleable => Package.Own.Where(m => m.InPreferences).ToList();
+	public bool? Enabled
+	{
+		get
+		{
+			List<InstalledMod> t = Toggleable;
+			if (t.Count == 0)
+			{
+				return Package.Members.Count > 0 && Package.Members.All(m => m.LoadedAsDependency || m.Enabled == true) ? true : Package.Record?.IsAddOn == true ? true : null;
+			}
+			return t.All(m => m.Enabled == true) ? true : t.All(m => m.Enabled == false) ? false : null;
+		}
+	}
 	public int EnabledSort => Enabled switch { true => 0, null => 1, false => 2 };
+	public bool CanToggle => Toggleable.Count > 0;
+	public string EnabledTip => CanToggle ? "Enables or disables the package's mods in Preferences.json" : "Loaded because an enabled mod requires it";
+	public bool IsDisabled => Enabled == false;
+	public bool UpdateAvailable => Package.UpdateAvailable;
+	public bool HasWarning => Package.Notes.Count > 0;
+	public string NotesText => string.Join("; ", Package.Notes);
+}
+
+/// <summary>A mod inside the selected package.</summary>
+public sealed class MemberRow(InstalledMod m, InstalledPackage p, IEnumerable<string> sharedWith)
+{
+	public InstalledMod Mod { get; } = m;
+	public string Name => Mod.Manifest.Name;
+	public string Version => Mod.Manifest.Version;
+	public string Key => Mod.Manifest.Identifier ?? Mod.Key;
+	public string Folder => Mod.FolderName;
+	public bool? Enabled => Mod.LoadedAsDependency ? true : Mod.Enabled;
 	public bool CanToggle => Mod.InPreferences;
-	public string EnabledTip => Mod.LoadedAsDependency ? "Loaded because an enabled mod requires it" : Mod.InPreferences ? "Enabled in Preferences.json" : "Not a game mod entry";
+	public string EnabledTip => Mod.LoadedAsDependency ? "Loaded because an enabled mod requires it" : Mod.InPreferences ? "Enabled in Preferences.json" : "";
 	public bool IsDisabled => Mod.Enabled == false;
-	public bool UpdateAvailable => Mod.UpdateAvailable;
-	public bool HasWarning => Mod.Notes.Any(n => n != "Deployed by Vortex");
-	public string NotesText => string.Join("; ", Mod.Notes);
+	public bool UpdateAvailable => false;
+	public bool HasWarning => Mod.Notes.Count > 0;
+	public string NotesText => string.Join("; ", (p.Shared.Contains(Mod.Key) ? [$"also in {string.Join(", ", sharedWith)}"] : Array.Empty<string>())
+		.Concat(Mod.VortexManaged ? ["deployed by Vortex"] : Array.Empty<string>()).Concat(Mod.Notes));
 }
 
 public partial class MainWindow : Window
 {
 	private readonly Settings _settings = Settings.Load();
 	private StateStore _state = StateStore.Load();
-	private List<ModRow> _rows = [];
+	private ScanResult _scan = new([], []);
+	private List<PackageRow> _rows = [];
 	private readonly DispatcherTimer _gameTimer = new() { Interval = TimeSpan.FromSeconds(3) };
 	private bool _busy;
 
@@ -52,31 +87,41 @@ public partial class MainWindow : Window
 		ShowGameStatus();
 		Log($"Mods: {_settings.ModsDir}");
 		Log($"Archive: {_settings.ArchiveDir}");
+		if (_state.Packages.Count == 0)
+		{
+			Log("No packages yet: \"Import from Vortex\" groups the installed mods and links them to Nexus.");
+		}
 		if (NxmHandler.IsOurs())
 		{
 			Log("Nexus \"Mod Manager Download\" links come here.");
 		}
-		// Tests: TETZMM_SNAPSHOT=<png> renders the window to a file and closes (TETZMM_SELECT picks a row first).
-		if (Environment.GetEnvironmentVariable("TETZMM_SNAPSHOT") is string shot)
+		Snapshot();
+	}
+
+	/// <summary>Tests: TETZMM_SNAPSHOT=&lt;png&gt; renders the window to a file and closes (TETZMM_SELECT picks a row first).</summary>
+	private void Snapshot()
+	{
+		if (Environment.GetEnvironmentVariable("TETZMM_SNAPSHOT") is not string shot)
 		{
-			if (Environment.GetEnvironmentVariable("TETZMM_SELECT") is string sel)
-			{
-				Grid.SelectedItem = Grid.Items.Cast<ModRow>().FirstOrDefault(r => r.Name.Contains(sel, StringComparison.OrdinalIgnoreCase));
-				Grid.ScrollIntoView(Grid.SelectedItem);
-			}
-			Dispatcher.BeginInvoke(DispatcherPriority.ApplicationIdle, () =>
-			{
-				System.Windows.Media.Imaging.RenderTargetBitmap bmp = new((int)ActualWidth, (int)ActualHeight, 96, 96, System.Windows.Media.PixelFormats.Pbgra32);
-				bmp.Render((System.Windows.Media.Visual)Content);
-				System.Windows.Media.Imaging.PngBitmapEncoder enc = new();
-				enc.Frames.Add(System.Windows.Media.Imaging.BitmapFrame.Create(bmp));
-				using (FileStream fs = File.Create(shot))
-				{
-					enc.Save(fs);
-				}
-				Close();
-			});
+			return;
 		}
+		if (Environment.GetEnvironmentVariable("TETZMM_SELECT") is string sel)
+		{
+			Grid.SelectedItem = Grid.Items.Cast<PackageRow>().FirstOrDefault(r => r.Name.Contains(sel, StringComparison.OrdinalIgnoreCase));
+			Grid.ScrollIntoView(Grid.SelectedItem);
+		}
+		Dispatcher.BeginInvoke(DispatcherPriority.ApplicationIdle, () =>
+		{
+			System.Windows.Media.Imaging.RenderTargetBitmap bmp = new((int)ActualWidth, (int)ActualHeight, 96, 96, System.Windows.Media.PixelFormats.Pbgra32);
+			bmp.Render((System.Windows.Media.Visual)Content);
+			System.Windows.Media.Imaging.PngBitmapEncoder enc = new();
+			enc.Frames.Add(System.Windows.Media.Imaging.BitmapFrame.Create(bmp));
+			using (FileStream fs = File.Create(shot))
+			{
+				enc.Save(fs);
+			}
+			Close();
+		});
 	}
 
 	// ---- list ----
@@ -92,15 +137,16 @@ public partial class MainWindow : Window
 		{
 			Log("Preferences.json can't be read: " + e.Message);
 		}
-		string? selected = (Grid.SelectedItem as ModRow)?.Mod.Key;
-		_rows = Scanner.Scan(_settings, prefs, _state).Select(m => new ModRow(m)).ToList();
+		string? selected = (Grid.SelectedItem as PackageRow)?.Package.Id;
+		_scan = Scanner.Scan(_settings, prefs, _state);
+		_rows = _scan.Packages.Where(p => p.Members.Count > 0 || p.Record?.IsAddOn == true || p.Missing.Count > 0).Select(p => new PackageRow(p)).ToList();
 		ApplyFilter();
 		if (selected != null)
 		{
-			Grid.SelectedItem = Grid.Items.Cast<ModRow>().FirstOrDefault(r => r.Mod.Key == selected);
+			Grid.SelectedItem = Grid.Items.Cast<PackageRow>().FirstOrDefault(r => r.Package.Id == selected);
 		}
 		int updates = _rows.Count(r => r.UpdateAvailable);
-		Counts.Text = $"{_rows.Count} mods, {_rows.Count(r => r.Mod.Enabled == true)} enabled, {updates} updates, {_rows.Count(r => r.HasWarning)} with notes";
+		Counts.Text = $"{_rows.Count} packages, {_scan.Mods.Count} mod folders, {_scan.Mods.Count(m => m.Enabled == true)} enabled, {updates} updates, {_rows.Count(r => r.HasWarning)} with notes";
 		UpdateAllButton.IsEnabled = updates > 0;
 		UpdateAllButton.Content = updates > 0 ? $"Update all ({updates})" : "Update all";
 		ShowDetails();
@@ -108,94 +154,85 @@ public partial class MainWindow : Window
 
 	private void ApplyFilter()
 	{
+		if (Grid == null)
+		{
+			return;
+		}
 		string f = FilterBox?.Text?.Trim() ?? "";
 		int view = ViewBox?.SelectedIndex ?? 0;
-		IEnumerable<ModRow> rows = _rows;
+		IEnumerable<PackageRow> rows = _rows;
 		if (f.Length > 0)
 		{
-			rows = rows.Where(r => r.Name.Contains(f, StringComparison.OrdinalIgnoreCase) || r.Key.Contains(f, StringComparison.OrdinalIgnoreCase)
-				|| r.Author.Contains(f, StringComparison.OrdinalIgnoreCase) || r.Mod.FolderName.Contains(f, StringComparison.OrdinalIgnoreCase));
+			rows = rows.Where(r => r.Name.Contains(f, StringComparison.OrdinalIgnoreCase) || r.Author.Contains(f, StringComparison.OrdinalIgnoreCase)
+				|| r.Package.Members.Any(m => m.Manifest.Name.Contains(f, StringComparison.OrdinalIgnoreCase) || m.Key.Contains(f, StringComparison.OrdinalIgnoreCase)
+					|| m.FolderName.Contains(f, StringComparison.OrdinalIgnoreCase)));
 		}
 		rows = view switch
 		{
 			1 => rows.Where(r => r.UpdateAvailable),
 			2 => rows.Where(r => r.HasWarning),
-			3 => rows.Where(r => r.Mod.Notes.Any(n => n.StartsWith("Duplicate") || n.StartsWith("Possible duplicate"))),
-			4 => rows.Where(r => r.IsDisabled),
-			5 => rows.Where(r => r.Mod.Record?.NexusModId == null),
-			6 => rows.Where(r => r.Mod.VortexManaged),
+			3 => rows.Where(r => r.Package.Notes.Any(n => n.Contains("Duplicate"))),
+			4 => rows.Where(r => r.IsDisabled || r.Package.Members.Any(m => m.Enabled == false)),
+			5 => rows.Where(r => r.Package.Members.Count > 1),
+			6 => rows.Where(r => r.Package.Record?.IsAddOn == true),
+			7 => rows.Where(r => r.Package.Record?.NexusModId == null),
+			8 => rows.Where(r => r.Package.Members.Any(m => m.VortexManaged)),
 			_ => rows,
 		};
-		if (Grid != null)
-		{
-			Grid.ItemsSource = rows.OrderBy(r => r.Name, StringComparer.OrdinalIgnoreCase).ToList();
-		}
+		Grid.ItemsSource = rows.OrderBy(r => r.Name, StringComparer.OrdinalIgnoreCase).ToList();
 	}
 
 	private void OnFilterChanged(object sender, EventArgs e) => ApplyFilter();
 
 	private void OnSelectionChanged(object sender, SelectionChangedEventArgs e) => ShowDetails();
 
-	private List<ModRow> Selected => Grid.SelectedItems.Cast<ModRow>().ToList();
+	private List<PackageRow> Selected => Grid.SelectedItems.Cast<PackageRow>().ToList();
 
 	private void ShowDetails()
 	{
-		List<ModRow> sel = Selected;
-		ModRow? row = sel.Count == 1 ? sel[0] : null;
+		List<PackageRow> sel = Selected;
+		PackageRow? row = sel.Count == 1 ? sel[0] : null;
 		UpdateButton.IsEnabled = sel.Any(r => r.UpdateAvailable);
-		NexusButton.IsEnabled = row?.Mod.Record?.NexusModId != null;
-		LinkButton.IsEnabled = row?.Mod.HasManifest == true;
-		FolderButton.IsEnabled = row != null;
-		RollBackButton.IsEnabled = row != null && Installer.HasPrevious(row.Mod.Key);
+		NexusButton.IsEnabled = row?.Package.Record?.NexusModId != null;
+		LinkButton.IsEnabled = row != null;
+		FolderButton.IsEnabled = row?.Package.Members.Count > 0 || row?.Package.Record?.IsAddOn == true;
+		RollBackButton.IsEnabled = row != null && row.Package.Members.Any(m => Installer.HasPrevious(m.Key));
 		UninstallButton.IsEnabled = row != null;
 		if (row == null)
 		{
-			Details.Text = sel.Count > 1 ? $"{sel.Count} mods selected" : "";
+			Details.Text = sel.Count > 1 ? $"{sel.Count} packages selected" : "";
+			MembersGrid.ItemsSource = null;
 			return;
 		}
-		InstalledMod m = row.Mod;
-		ModRecord? r = m.Record;
-		List<string> lines =
-		[
-			$"{m.Manifest.Name} {m.Manifest.Version}" + (m.Manifest.Author.Length > 0 ? $" by {m.Manifest.Author}" : ""),
-			$"Identifier: {m.Key}",
-		];
-		if (m.Manifest.Description.Length > 0)
+		InstalledPackage p = row.Package;
+		PackageRecord? r = p.Record;
+		List<string> lines = [$"{p.Name} {p.Version}" + (p.Author.Length > 0 ? $" by {p.Author}" : "")];
+		if (p.Primary?.Manifest.Description is { Length: > 0 } desc)
 		{
-			lines.Add("");
-			lines.Add(m.Manifest.Description);
-			lines.Add("");
+			lines.Add(desc);
 		}
-		lines.Add($"Folder: {m.Folder}" + (m.VortexManaged ? " (deployed by Vortex)" : ""));
-		lines.Add(m.InPreferences ? $"Preferences.json: {(m.Enabled == true ? "enabled" : "disabled")}, version {m.PreferencesVersion}"
-			: m.LoadedAsDependency ? "Preferences.json: no entry; loaded because an enabled mod requires it" : m.Manifest.Identifier != null ? "Preferences.json: no entry" : "");
-		if (m.Manifest.Required.Count > 0)
+		if (r == null)
 		{
-			lines.Add("Requires: " + string.Join(", ", m.Manifest.Required));
+			lines.Add("Not part of a package yet (installed before this tool, and not found in Vortex's downloads).");
 		}
-		if (m.Manifest.Optional.Count > 0)
+		else
 		{
-			lines.Add("Optional: " + string.Join(", ", m.Manifest.Optional));
+			lines.Add($"Installed from: {r.SourceName ?? r.Source}" + (r.InstalledAt != null ? $" ({r.InstalledAt:g})" : ""));
+			if (r.NexusModId != null)
+			{
+				lines.Add($"Nexus: mod {r.NexusModId}" + (r.NexusFileId != null ? $", file {r.NexusFileId}" : "") + (r.InstalledNexusVersion != null ? $", version {r.InstalledNexusVersion}" : "")
+					+ (r.LatestVersion != null ? $"; newest {r.LatestVersion}" + (r.CheckedAt != null ? $" (checked {r.CheckedAt:g})" : "") : "") + $" [linked by {r.LinkSource}]");
+			}
+			lines.Add(r.Archive != null ? $"Archive: {r.Archive}" + (File.Exists(r.Archive) ? "" : " (missing)") : "Archive: none yet");
+			foreach ((string key, List<string> files) in r.Overlays)
+			{
+				lines.Add($"Adds {files.Count} files to {key}");
+			}
 		}
-		if (m.Manifest.Incompatible.Count > 0)
-		{
-			lines.Add("Incompatible: " + string.Join(", ", m.Manifest.Incompatible));
-		}
-		if (r?.NexusModId != null)
-		{
-			lines.Add($"Nexus: mod {r.NexusModId}" + (r.NexusFileId != null ? $", file {r.NexusFileId}" : "") + (r.InstalledNexusVersion != null ? $", Nexus version {r.InstalledNexusVersion}" : "")
-				+ (r.LatestVersion != null ? $"; newest {r.LatestVersion}" + (r.CheckedAt != null ? $" (checked {r.CheckedAt:g})" : "") : "") + $" [linked by {r.LinkSource}]");
-		}
-		if (r?.Archive != null)
-		{
-			lines.Add($"Archive: {r.Archive}" + (File.Exists(r.Archive) ? "" : " (missing)"));
-		}
-		if (m.Notes.Count > 0)
-		{
-			lines.Add("");
-			lines.AddRange(m.Notes.Select(n => "• " + n));
-		}
-		Details.Text = string.Join(Environment.NewLine, lines.Where(l => l != null));
+		lines.AddRange(p.Missing.Select(k => $"• {k} is part of this package but not in Mods"));
+		Details.Text = string.Join(Environment.NewLine, lines);
+		MembersGrid.ItemsSource = p.Members.Select(m => new MemberRow(m, p,
+			_scan.Packages.Where(o => o != p && o.Members.Contains(m)).Select(o => o.Name))).ToList();
 	}
 
 	private void ShowGameStatus()
@@ -269,47 +306,51 @@ public partial class MainWindow : Window
 
 	// ---- installs ----
 
-	/// <summary>Installs an archive. Asks first only when something needs a look: a Vortex folder, an older version, a blocked folder.</summary>
-	private async Task InstallArchive(string path, NexusSource? nexus, bool confirmAlways)
+	/// <summary>
+	/// Installs an archive or folder. Asks first only when something needs a look: an older version, a Vortex folder, a
+	/// blocked folder, or an add-on.
+	/// </summary>
+	private async Task Install(string path, NexusSource? nexus)
 	{
-		List<InstalledMod> installed = Scanner.Scan(_settings, null, _state);
-		InstallPlan plan = await Task.Run(() => Installer.Plan(_settings, path, installed));
+		ScanResult installed = Scanner.Scan(_settings, null, _state);
+		InstallPlan plan = await Task.Run(() => Installer.Plan(_settings, path, installed, _state, nexus?.ModId));
 		try
 		{
 			List<string> lines = [];
-			bool ask = confirmAlways;
+			bool ask = plan.Overlays.Count > 0;
 			foreach (PlannedMod p in plan.Mods)
 			{
 				string folder = Path.GetFileName(p.Target);
-				if (p.Blocked != null)
+				string version = p.Existing != null && p.Existing.Manifest.Version != p.Manifest.Version ? $"{p.Existing.Manifest.Version} → {p.Manifest.Version}" : p.Manifest.Version;
+				string what = p.Action switch
 				{
-					lines.Add($"✗ {p.Manifest.Name}: {p.Blocked} It will be skipped.");
-					ask = true;
-					continue;
-				}
-				if (p.Existing == null)
-				{
-					lines.Add($"+ {p.Manifest.Name} {p.Manifest.Version} (new, folder \"{folder}\")");
-				}
-				else
-				{
-					int c = Versions.Compare(p.Manifest.Version, p.Existing.Manifest.Version);
-					string how = c > 0 ? "update" : c < 0 ? "OLDER than the installed one" : "same version, reinstall";
-					lines.Add($"↻ {p.Manifest.Name} {p.Existing.Manifest.Version} → {p.Manifest.Version} ({how}, folder \"{folder}\")");
-					ask |= c < 0;
-				}
+					PlanAction.Install => $"new, folder \"{folder}\"",
+					PlanAction.Update => "update",
+					PlanAction.Reinstall => "same version, copied again",
+					PlanAction.Downgrade => "OLDER than the installed one",
+					PlanAction.KeepInstalled => $"shared, left as it is: {p.Reason}",
+					_ => $"skipped: {p.Reason}",
+				};
+				lines.Add($"{(p.Copies ? "•" : "–")} {p.Manifest.Name} {version} ({what})");
+				ask |= p.Action is PlanAction.Downgrade or PlanAction.Blocked;
 				if (p.ReplacesVortexFolder)
 				{
-					lines.Add("   This folder is deployed by Vortex: Vortex will report it as changed until Railroader is removed from Vortex.");
+					lines.Add("    deployed by Vortex now: Vortex will report it as changed until Railroader is removed from Vortex");
 					ask = true;
 				}
 			}
-			if (ask && MessageBox.Show(this, $"Install from {Path.GetFileName(path)}:\n\n{string.Join("\n", lines)}\n\nGo ahead?",
+			foreach (PlannedOverlay o in plan.Overlays)
+			{
+				lines.Add($"• {o.Files.Count} add-on files into {o.Target.Manifest.Name} (\"{o.Target.FolderName}\"), put back whenever that mod is reinstalled");
+			}
+			string header = plan.Package != null ? $"Updates the installed package \"{_scan.Packages.FirstOrDefault(p => p.Record == plan.Package)?.Name ?? plan.Name}\"" : $"New package \"{plan.Name}\"";
+			if (ask && MessageBox.Show(this, $"{Path.GetFileName(path.TrimEnd('\\'))}\n{header}:\n\n{string.Join("\n", lines)}\n\nGo ahead?",
 				"Install", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes)
 			{
-				Log($"Not installed: {Path.GetFileName(path)}");
+				Log($"Not installed: {Path.GetFileName(path.TrimEnd('\\'))}");
 				return;
 			}
+			Log($"{Path.GetFileName(path.TrimEnd('\\'))}: {header}");
 			await Task.Run(() => Installer.Apply(_settings, _state, plan, nexus, Log));
 		}
 		finally
@@ -318,7 +359,7 @@ public partial class MainWindow : Window
 		}
 	}
 
-	private async Task DownloadAndInstall(NexusClient nexus, int modId, int fileId, string? key, string? expires, bool confirmAlways)
+	private async Task DownloadAndInstall(NexusClient nexus, int modId, int fileId, string? key, string? expires)
 	{
 		NexusFile file = await nexus.File(modId, fileId);
 		Log($"Downloading {file.Name} {file.Version} ({file.FileName})...");
@@ -329,7 +370,7 @@ public partial class MainWindow : Window
 		Progress.IsIndeterminate = true;
 		try
 		{
-			await InstallArchive(dest, new NexusSource(modId, fileId, file.FileName, file.Version), confirmAlways);
+			await Install(dest, new NexusSource(modId, fileId, file.FileName, file.Version));
 		}
 		finally
 		{
@@ -337,19 +378,16 @@ public partial class MainWindow : Window
 		}
 	}
 
-	/// <summary>A start argument or a forwarded one: an nxm link or an archive path.</summary>
+	/// <summary>A start argument or a forwarded one: an nxm link, an archive or a folder.</summary>
 	public async void HandleArgument(string arg)
 	{
 		if (arg.StartsWith("nxm://", StringComparison.OrdinalIgnoreCase))
 		{
 			await HandleNxm(arg);
 		}
-		else if (File.Exists(arg))
+		else if ((File.Exists(arg) || Directory.Exists(arg)) && GameClosedOrSay())
 		{
-			if (GameClosedOrSay())
-			{
-				await Run("Install", () => InstallArchive(arg, null, false));
-			}
+			await Run("Install", () => Install(arg, null));
 		}
 	}
 
@@ -384,23 +422,40 @@ public partial class MainWindow : Window
 		{
 			return;
 		}
-		await Run("Nexus download", () => DownloadAndInstall(nexus, link.ModId, link.FileId, link.Key, link.Expires, false));
+		await Run("Nexus download", () => DownloadAndInstall(nexus, link.ModId, link.FileId, link.Key, link.Expires));
 	}
 
-	private async void OnInstallArchive(object sender, RoutedEventArgs e)
+	private async Task InstallAll(IEnumerable<string> paths)
 	{
-		OpenFileDialog dlg = new() { Filter = "Mod archives|*.zip;*.7z;*.rar|All files|*.*", Multiselect = true };
-		if (dlg.ShowDialog(this) != true || !GameClosedOrSay())
+		if (!GameClosedOrSay())
 		{
 			return;
 		}
 		await Run("Install", async () =>
 		{
-			foreach (string f in dlg.FileNames)
+			foreach (string p in paths)
 			{
-				await InstallArchive(f, null, false);
+				await Install(p, null);
 			}
 		});
+	}
+
+	private async void OnInstallArchive(object sender, RoutedEventArgs e)
+	{
+		OpenFileDialog dlg = new() { Filter = "Mod archives|*.zip;*.7z;*.rar|All files|*.*", Multiselect = true };
+		if (dlg.ShowDialog(this) == true)
+		{
+			await InstallAll(dlg.FileNames);
+		}
+	}
+
+	private async void OnInstallFolder(object sender, RoutedEventArgs e)
+	{
+		OpenFolderDialog dlg = new() { Multiselect = true, Title = "An unzipped download: a folder holding one or more mod folders" };
+		if (dlg.ShowDialog(this) == true)
+		{
+			await InstallAll(dlg.FolderNames);
+		}
 	}
 
 	private void OnDragOver(object sender, DragEventArgs e)
@@ -411,17 +466,10 @@ public partial class MainWindow : Window
 
 	private async void OnDrop(object sender, DragEventArgs e)
 	{
-		if (e.Data.GetData(DataFormats.FileDrop) is not string[] files || !GameClosedOrSay())
+		if (e.Data.GetData(DataFormats.FileDrop) is string[] paths)
 		{
-			return;
+			await InstallAll(paths.Where(p => File.Exists(p) || Directory.Exists(p)));
 		}
-		await Run("Install", async () =>
-		{
-			foreach (string f in files.Where(File.Exists))
-			{
-				await InstallArchive(f, null, false);
-			}
-		});
 	}
 
 	// ---- updates ----
@@ -435,16 +483,15 @@ public partial class MainWindow : Window
 		}
 		await Run("Update check", async () =>
 		{
-			List<InstalledMod> mods = Scanner.Scan(_settings, null, _state);
-			Log($"Checking {mods.Count(m => m.Record?.NexusModId != null)} linked mods on Nexus...");
-			int n = await Updates.Check(nexus, _state, mods, Log);
+			Log($"Checking {_scan.Packages.Count(p => p.Record?.NexusModId != null)} linked packages on Nexus...");
+			int n = await Updates.Check(nexus, _state, _scan.Packages, Log);
 			Log(n == 0 ? "Everything is up to date." : $"{n} updates.");
 		});
 	}
 
-	private async Task UpdateRows(List<ModRow> rows)
+	private async Task UpdateRows(List<PackageRow> rows)
 	{
-		rows = rows.Where(r => r.UpdateAvailable && r.Mod.Record?.LatestFileId != null).ToList();
+		rows = rows.Where(r => r.UpdateAvailable && r.Package.Record?.LatestFileId != null).ToList();
 		if (rows.Count == 0 || !GameClosedOrSay())
 		{
 			return;
@@ -456,9 +503,9 @@ public partial class MainWindow : Window
 		}
 		await Run("Update", async () =>
 		{
-			foreach (ModRow r in rows)
+			foreach (PackageRow r in rows)
 			{
-				await DownloadAndInstall(nexus, r.Mod.Record!.NexusModId!.Value, r.Mod.Record.LatestFileId!.Value, null, null, false);
+				await DownloadAndInstall(nexus, r.Package.Record!.NexusModId!.Value, r.Package.Record.LatestFileId!.Value, null, null);
 			}
 		});
 	}
@@ -467,8 +514,8 @@ public partial class MainWindow : Window
 
 	private async void OnUpdateAll(object sender, RoutedEventArgs e)
 	{
-		List<ModRow> rows = _rows.Where(r => r.UpdateAvailable).ToList();
-		if (MessageBox.Show(this, "Update these mods from Nexus?\n\n" + string.Join("\n", rows.Select(r => $"{r.Name}  {r.Mod.InstalledVersion} → {r.Latest}")),
+		List<PackageRow> rows = _rows.Where(r => r.UpdateAvailable).ToList();
+		if (MessageBox.Show(this, "Update these from Nexus?\n\n" + string.Join("\n", rows.Select(r => $"{r.Name}  {r.Package.InstalledVersion} → {r.Latest}")),
 			"Update all", MessageBoxButton.YesNo, MessageBoxImage.Question) == MessageBoxResult.Yes)
 		{
 			await UpdateRows(rows);
@@ -477,33 +524,39 @@ public partial class MainWindow : Window
 
 	private async void OnVortexImport(object sender, RoutedEventArgs e)
 	{
-		await Run("Link from Vortex", () => Task.Run(() =>
-		{
-			int n = VortexImport.Run(_settings, _state, Scanner.Scan(_settings, null, _state), Log);
-			Log($"{n} mods newly linked to Nexus. \"Check for updates\" matches each to its Nexus file.");
-		}));
-	}
-
-	// ---- per mod ----
-
-	private void OnToggleEnabled(object sender, RoutedEventArgs e)
-	{
-		if (sender is not CheckBox { DataContext: ModRow row } box || row.Mod.Manifest.Identifier is not string id)
+		MessageBoxResult copy = MessageBox.Show(this,
+			"Group the installed mods into packages and link them to Nexus, from Vortex's downloads.\n\n"
+			+ $"Also copy each package's download (where it matches the installed version) into the archive folder?\n{_settings.ArchiveDir}",
+			"Import from Vortex", MessageBoxButton.YesNoCancel, MessageBoxImage.Question);
+		if (copy == MessageBoxResult.Cancel)
 		{
 			return;
 		}
-		bool want = box.IsChecked == true;
+		await Run("Import from Vortex", () => Task.Run(() =>
+		{
+			(int made, int archived) = VortexImport.Run(_settings, _state, Scanner.Scan(_settings, Preferences.Load(_settings.PreferencesPath), _state), copy == MessageBoxResult.Yes, Log);
+			Log($"{made} new packages" + (copy == MessageBoxResult.Yes ? $", {archived} archives copied" : "") + ". \"Check for updates\" matches each to its Nexus file.");
+		}));
+	}
+
+	// ---- enabling ----
+
+	private void SetEnabled(IEnumerable<InstalledMod> mods, bool on, string what)
+	{
 		if (!GameClosedOrSay())
 		{
-			box.IsChecked = !want;
+			Refresh();
 			return;
 		}
 		try
 		{
 			Preferences prefs = Preferences.Load(_settings.PreferencesPath);
-			prefs.SetEnabled(id, want);
+			foreach (InstalledMod m in mods.Where(m => m.InPreferences && m.Manifest.Identifier != null))
+			{
+				prefs.SetEnabled(m.Manifest.Identifier!, on);
+			}
 			prefs.Save();
-			Log($"{(want ? "Enabled" : "Disabled")} {row.Name}");
+			Log($"{(on ? "Enabled" : "Disabled")} {what}");
 		}
 		catch (Exception ex) when (ex is IOException or InvalidOperationException)
 		{
@@ -512,9 +565,27 @@ public partial class MainWindow : Window
 		Refresh();
 	}
 
+	private void OnTogglePackage(object sender, RoutedEventArgs e)
+	{
+		if (sender is CheckBox { DataContext: PackageRow row })
+		{
+			SetEnabled(row.Package.Own, row.Enabled != true, row.Name);
+		}
+	}
+
+	private void OnToggleMember(object sender, RoutedEventArgs e)
+	{
+		if (sender is CheckBox { DataContext: MemberRow row })
+		{
+			SetEnabled([row.Mod], row.Mod.Enabled != true, row.Name);
+		}
+	}
+
+	// ---- per package ----
+
 	private void OnNexusPage(object sender, RoutedEventArgs e)
 	{
-		if (Selected.FirstOrDefault()?.Mod.Record?.NexusModId is int id)
+		if (Selected.FirstOrDefault()?.Package.Record?.NexusModId is int id)
 		{
 			Process.Start(new ProcessStartInfo($"https://www.nexusmods.com/{NexusClient.GameDomain}/mods/{id}") { UseShellExecute = true });
 		}
@@ -522,32 +593,30 @@ public partial class MainWindow : Window
 
 	private void OnLink(object sender, RoutedEventArgs e)
 	{
-		if (Selected.FirstOrDefault() is not ModRow row)
+		if (Selected.FirstOrDefault() is not PackageRow row)
 		{
 			return;
 		}
-		string current = row.Mod.Record?.NexusModId?.ToString() ?? "";
+		string current = row.Package.Record?.NexusModId?.ToString() ?? "";
 		string? answer = InputDialog.Ask(this, "Link to Nexus", $"Nexus mod id (or page URL) for {row.Name}.\nLeave empty to unlink.", current);
 		if (answer == null)
 		{
 			return;
 		}
-		System.Text.RegularExpressions.Match m = System.Text.RegularExpressions.Regex.Match(answer, @"(?:mods/)?(\d+)\s*$");
-		ModRecord r = _state.Get(row.Mod.Key);
+		PackageRecord r = row.Package.Record ?? NewRecord(row.Package);
+		System.Text.RegularExpressions.Match m = System.Text.RegularExpressions.Regex.Match(answer, @"(?:mods/)?(\d+)\s*/?\s*$");
+		r.NexusFileId = null;
+		r.LatestVersion = null;
+		r.LatestFileId = null;
+		r.InstalledNexusVersion = null;
 		if (answer.Trim().Length == 0)
 		{
 			r.NexusModId = null;
-			r.NexusFileId = null;
-			r.LatestVersion = null;
-			r.LatestFileId = null;
 			Log($"Unlinked {row.Name} from Nexus");
 		}
 		else if (m.Success)
 		{
 			r.NexusModId = int.Parse(m.Groups[1].Value);
-			r.NexusFileId = null;
-			r.LatestVersion = null;
-			r.LatestFileId = null;
 			r.LinkSource = "manual";
 			Log($"Linked {row.Name} to Nexus mod {r.NexusModId}");
 		}
@@ -555,37 +624,55 @@ public partial class MainWindow : Window
 		Refresh();
 	}
 
+	/// <summary>A record for a mod no package claims yet (linking it to Nexus makes it a package of one).</summary>
+	private PackageRecord NewRecord(InstalledPackage p)
+	{
+		PackageRecord r = new() { Members = p.Members.Select(m => m.Key).ToList(), Source = "existing", SourceName = p.Members[0].FolderName };
+		_state.Packages.Add(r);
+		return r;
+	}
+
 	private void OnOpenFolder(object sender, RoutedEventArgs e)
 	{
-		if (Selected.FirstOrDefault() is ModRow row)
+		InstalledMod? m = (MembersGrid.SelectedItem as MemberRow)?.Mod ?? Selected.FirstOrDefault()?.Package.Members.FirstOrDefault()
+			?? _scan.Mods.FirstOrDefault(x => Selected.FirstOrDefault()?.Package.Record?.Overlays.ContainsKey(x.Key) == true);
+		if (m != null)
 		{
-			Process.Start("explorer.exe", $"\"{row.Mod.Folder}\"");
+			Process.Start("explorer.exe", $"\"{m.Folder}\"");
 		}
 	}
 
 	private async void OnRollBack(object sender, RoutedEventArgs e)
 	{
-		if (Selected.FirstOrDefault() is not ModRow row || !GameClosedOrSay())
+		if (Selected.FirstOrDefault() is not PackageRow row || !GameClosedOrSay())
 		{
 			return;
 		}
-		if (MessageBox.Show(this, $"Put back the version of {row.Name} that was installed before {row.Mod.Manifest.Version}?", "Roll back",
+		List<string> mods = row.Package.Members.Where(m => Installer.HasPrevious(m.Key)).Select(m => m.Manifest.Name).ToList();
+		if (MessageBox.Show(this, $"Put back the copies kept from before the last install of:\n\n{string.Join("\n", mods)}", "Roll back",
 			MessageBoxButton.YesNo, MessageBoxImage.Question) == MessageBoxResult.Yes)
 		{
-			await Run("Roll back", () => Task.Run(() => Installer.RollBack(_settings, _state, row.Mod, Log)));
+			await Run("Roll back", () => Task.Run(() => Installer.RollBack(_settings, _state, row.Package, Log)));
 		}
 	}
 
 	private async void OnUninstall(object sender, RoutedEventArgs e)
 	{
-		if (Selected.FirstOrDefault() is not ModRow row || !GameClosedOrSay())
+		if (Selected.FirstOrDefault() is not PackageRow row || !GameClosedOrSay())
 		{
 			return;
 		}
-		if (MessageBox.Show(this, $"Uninstall {row.Name} {row.Mod.Manifest.Version}?\n\nIts folder moves out of Mods (kept for rollback) and its Preferences.json entry is removed. Its archive stays.",
+		InstalledPackage p = row.Package;
+		List<string> lines = p.Own.Select(m => $"• {m.Manifest.Name} (\"{m.FolderName}\")").ToList();
+		lines.AddRange(p.Members.Where(m => p.Shared.Contains(m.Key)).Select(m => $"– {m.Manifest.Name} stays: another package uses it"));
+		if (p.Record != null)
+		{
+			lines.AddRange(p.Record.Overlays.Select(kv => $"• its {kv.Value.Count} files in {kv.Key}"));
+		}
+		if (MessageBox.Show(this, $"Uninstall {row.Name}?\n\n{string.Join("\n", lines)}\n\nFolders move out of Mods (kept for rollback) and leave Preferences.json. The archive stays.",
 			"Uninstall", MessageBoxButton.YesNo, MessageBoxImage.Question) == MessageBoxResult.Yes)
 		{
-			await Run("Uninstall", () => Task.Run(() => Installer.Uninstall(_settings, _state, row.Mod, Log)));
+			await Run("Uninstall", () => Task.Run(() => Installer.Uninstall(_settings, _state, p, Log)));
 		}
 	}
 

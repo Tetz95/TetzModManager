@@ -145,10 +145,11 @@ public sealed class NexusClient : IDisposable
 /// <summary>Update checks: follows Nexus's file update chain from the installed file to the newest one.</summary>
 public static class Updates
 {
-	public static async Task<int> Check(NexusClient nexus, StateStore state, IReadOnlyList<InstalledMod> mods, Action<string> log, CancellationToken ct = default)
+	public static async Task<int> Check(NexusClient nexus, StateStore state, IReadOnlyList<InstalledPackage> packages, Action<string> log, CancellationToken ct = default)
 	{
 		int found = 0;
-		foreach (IGrouping<int, InstalledMod> g in mods.Where(m => m.Record?.NexusModId != null).GroupBy(m => m.Record!.NexusModId!.Value))
+		foreach (IGrouping<int, InstalledPackage> g in packages.Where(p => p.Record?.NexusModId != null && (p.Members.Count > 0 || p.Record.IsAddOn))
+			.GroupBy(p => p.Record!.NexusModId!.Value))
 		{
 			NexusFiles files;
 			try
@@ -160,31 +161,32 @@ public static class Updates
 				log($"Nexus {g.Key}: {e.Message}");
 				continue;
 			}
-			foreach (InstalledMod mod in g)
+			foreach (InstalledPackage p in g)
 			{
-				ModRecord r = mod.Record!;
-				NexusFile? current = Resolve(files, r, mod.Manifest.Version) ?? (r.InstalledNexusVersion != null ? Resolve(files, r, r.InstalledNexusVersion) : null);
+				PackageRecord r = p.Record!;
+				// The Nexus version known from the install (or Vortex's download) first: authors often leave Info.json at 1.0.0.
+				NexusFile? current = (r.InstalledNexusVersion != null ? Resolve(files, r, r.InstalledNexusVersion) : null) ?? Resolve(files, r, p.Version);
 				if (current != null)
 				{
 					r.NexusFileId = current.FileId;
 					r.NexusFileName ??= current.FileName;
+					r.InstalledNexusVersion = current.Version;
 					NexusFile latest = Latest(files, current);
 					r.LatestFileId = latest.FileId;
 					r.LatestVersion = latest.Version;
-					r.InstalledNexusVersion = current.Version;
 				}
 				else
 				{
-					// The installed version isn't on the page (a local build, or an old file removed): compare with the page's main files.
+					// The installed version isn't on the page (a local build, or an old file removed): compare with the page's main file.
 					NexusFile? main = files.Files.Where(f => f.Category == "MAIN").OrderByDescending(f => f.Primary).ThenByDescending(f => f.Uploaded).FirstOrDefault();
 					r.LatestFileId = main?.FileId;
 					r.LatestVersion = main?.Version;
 				}
 				r.CheckedAt = DateTime.Now;
-				if (mod.UpdateAvailable)
+				if (p.UpdateAvailable)
 				{
 					found++;
-					log($"Update: {mod.Manifest.Name} {mod.Manifest.Version} -> {r.LatestVersion}");
+					log($"Update: {p.Name} {p.InstalledVersion} -> {r.LatestVersion}");
 				}
 			}
 		}
@@ -193,7 +195,7 @@ public static class Updates
 	}
 
 	/// <summary>The Nexus file the installed version came from: the recorded one, else the newest file with the same version.</summary>
-	private static NexusFile? Resolve(NexusFiles files, ModRecord r, string installedVersion)
+	private static NexusFile? Resolve(NexusFiles files, PackageRecord r, string installedVersion)
 	{
 		if (r.NexusFileId is int id && files.Files.FirstOrDefault(f => f.FileId == id) is NexusFile known && Versions.Same(known.Version, installedVersion))
 		{

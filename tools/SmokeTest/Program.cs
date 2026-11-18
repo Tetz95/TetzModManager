@@ -1,10 +1,10 @@
 using TetzModManager;
 
-// Smoke test. Reads the real home folder (never writes it); installs go into a throwaway home under TETZMM_DATA.
-// Usage: set TETZMM_DATA=<scratch dir>; dotnet run -- <real home> <a zip of an installed mod> <an older zip of it> [nexus key file]
+// Smoke test. Reads the real home folder and Vortex downloads (never writes them); installs go into a throwaway home.
+// Usage: set TETZMM_DATA=<scratch>; dotnet run -- <real home> <Vortex downloads dir> <LT zip new> <LT zip old> [nexus key file]
 string data = Environment.GetEnvironmentVariable("TETZMM_DATA") ?? throw new Exception("Set TETZMM_DATA to a scratch folder.");
-string realHome = args[0], zipNew = args[1], zipOld = args[2];
-string? keyFile = args.Length > 3 ? args[3] : null;
+string realHome = args[0], vortex = args[1], ltNew = args[2], ltOld = args[3];
+string? keyFile = args.Length > 4 ? args[4] : null;
 void Log(string s) => Console.WriteLine(s);
 int failures = 0;
 void Check(bool ok, string what)
@@ -15,105 +15,113 @@ void Check(bool ok, string what)
 		failures++;
 	}
 }
+string Download(string startsWith) =>
+	Directory.GetFiles(vortex, startsWith + "*").OrderByDescending(f => f).First();
 
-// 1. Preferences.json round trip: unchanged data must write back byte for byte.
-Settings real = new() { HomeDir = realHome };
+// ---- 1. The real install, read only ----
+Settings real = new() { HomeDir = realHome, VortexDownloadsDir = vortex, ArchiveDir = Path.Combine(data, "archive-real") };
 string original = File.ReadAllText(real.PreferencesPath);
 Check(Preferences.Load(real.PreferencesPath).Serialize() == original, "Preferences.json round trip is byte-identical");
 
-// 2. Scan the real Mods folder.
 StateStore state = new();
-List<InstalledMod> mods = Scanner.Scan(real, Preferences.Load(real.PreferencesPath), state);
-Log($"{mods.Count} folders, {mods.Count(m => m.Manifest.Identifier != null)} 0.6 mods, {mods.Count(m => m.Manifest.Umm)} UMM manifests, {mods.Count(m => !m.HasManifest)} without");
-foreach (var g in mods.SelectMany(m => m.Notes.Select(n => (m, n))).Where(x => x.n != "Deployed by Vortex").GroupBy(x => x.n.Split(':')[0].Split(" (")[0]))
-{
-	Log($"  note '{g.Key}': {g.Count()}  e.g. {g.First().m.Manifest.Name}: {g.First().n}");
-}
-Check(mods.Count > 50, "scan found the installed mods");
+ScanResult scan = Scanner.Scan(real, Preferences.Load(real.PreferencesPath), state);
+Log($"{scan.Mods.Count} mod folders");
+(int made, _) = VortexImport.Run(real, state, scan, false, _ => { });
+scan = Scanner.Scan(real, Preferences.Load(real.PreferencesPath), state);
+Log($"Vortex import: {made} packages; {scan.Packages.Count} rows ({scan.Packages.Count(p => p.Record == null)} mods without a package)");
+InstalledPackage? scold = scan.Packages.FirstOrDefault(p => p.Members.Any(m => m.Key == "scold/scold"));
+Check(scold?.Members.Count == 3 && scold.Primary?.Key == "scold/scold", $"SCOLD is one package of 3 named after scold ({scold?.Name}: {string.Join(", ", scold?.Members.Select(m => m.FolderName) ?? [])})");
+List<InstalledPackage> withScripts = scan.Packages.Where(p => p.Members.Any(m => m.FolderName == "GP38Scripts")).ToList();
+Check(withScripts.Count >= 3 && withScripts.All(p => p.Shared.Contains(p.Members.First(m => m.FolderName == "GP38Scripts").Key) && p.Primary?.FolderName != "GP38Scripts"),
+	$"GP38Scripts is shared by BMAN's packs, none named after it ({string.Join(" | ", withScripts.Select(p => p.Name))})");
+InstalledPackage? placards = scan.Packages.FirstOrDefault(p => p.Record?.IsAddOn == true);
+Check(placards != null, $"Freeman's placards are an add-on ({placards?.Name} -> {string.Join(", ", placards?.Record?.Overlays.Keys.ToList() ?? [])})");
+InstalledPackage? lirr = scan.Packages.FirstOrDefault(p => p.Members.Count == 2 && p.Members.All(m => m.FolderName.StartsWith("LIRR")));
+Check(lirr != null, "LIRR GT-1's two nested mods are one package");
+Check(scan.Packages.Any(p => p.Members.Any(m => m.FolderName == "ld-gp38")) && scan.Packages.Any(p => p.Members.Any(m => m.FolderName == "ld-gp40"))
+	&& scan.Packages.First(p => p.Members.Any(m => m.FolderName == "ld-gp38")) != scan.Packages.First(p => p.Members.Any(m => m.FolderName == "ld-gp40")),
+	"BMAN's GP38 and GP40 packs stay two packages (they share GP38Scripts and the Blomberg trucks)");
+InstalledPackage? gp60 = scan.Packages.FirstOrDefault(p => p.Members.Any(m => m.FolderName == "gp60"));
+Check(gp60?.Members.Count == 3, $"Freeman's GP60 pack is one package of 3 ({gp60?.Name})");
 
-// 3. Vortex links (into the scratch state).
-int linked = VortexImport.Run(real, state, mods, _ => { });
-Log($"Vortex import linked {linked} mods to Nexus pages");
-Check(linked > 20, "Vortex downloads link most Nexus mods");
-
-// 4. Update check against Nexus.
 if (keyFile != null)
 {
 	real.NexusKeyFile = keyFile;
 	using NexusClient nexus = new(real.ReadNexusKey() ?? throw new Exception("no key"));
-	mods = Scanner.Scan(real, Preferences.Load(real.PreferencesPath), state);
-	int updates = await Updates.Check(nexus, state, mods, Log);
-	int resolved = mods.Count(m => m.Record?.NexusFileId != null);
-	Log($"{updates} updates; {resolved} of {mods.Count(m => m.Record?.NexusModId != null)} linked mods matched to their Nexus file");
-	Check(resolved > 0, "installed versions matched to Nexus files");
+	int updates = await Updates.Check(nexus, state, scan.Packages, Log);
+	int linked = scan.Packages.Count(p => p.Record?.NexusModId != null);
+	Log($"{updates} updates; {scan.Packages.Count(p => p.Record?.NexusFileId != null)} of {linked} linked packages matched to their Nexus file");
+	Check(scan.Packages.Count(p => p.Record?.NexusFileId != null) > linked / 2, "most linked packages matched to their Nexus file");
 }
 
-// 5. Installs into a throwaway home: same version, older version, rollback, uninstall, archive.
-// Its own data folder, so the links and update results above stay in <data>\state.json.
+// ---- 2. Installs into a throwaway home ----
 data = Path.Combine(data, "install-test");
 Environment.SetEnvironmentVariable("TETZMM_DATA", data);
+Files.TryDeleteDirectory(data);
 string home = Path.Combine(data, "home");
-if (Directory.Exists(home))
-{
-	Directory.Delete(home, true);
-}
 Directory.CreateDirectory(Path.Combine(home, "Mods"));
 File.Copy(real.PreferencesPath, Path.Combine(home, "Preferences.json"));
 Settings fake = new() { HomeDir = home, ArchiveDir = Path.Combine(data, "archive"), GameProcess = "NoSuchProcess-TetzMM" };
 StateStore st = new();
-
-using (InstallPlan plan = Installer.Plan(fake, zipNew, Scanner.Scan(fake, null, st)))
+PackageRecord Install(string source)
 {
-	Check(plan.Mods.Count == 1, $"plan finds one mod in {Path.GetFileName(zipNew)}");
-	Installer.Apply(fake, st, plan, null, Log);
+	using InstallPlan plan = Installer.Plan(fake, source, Scanner.Scan(fake, null, st), st);
+	Log($"[{Path.GetFileName(source)}] {string.Join(", ", plan.Mods.Select(m => $"{m.Manifest.Name}:{m.Action}"))}{string.Join(", ", plan.Overlays.Select(o => $"add-on for {o.Target.FolderName} ({o.Files.Count} files)"))}");
+	return Installer.Apply(fake, st, plan, null, Log);
 }
-List<InstalledMod> now = Scanner.Scan(fake, Preferences.Load(fake.PreferencesPath), st);
-InstalledMod lt = now.Single();
-string id = lt.Manifest.Identifier!;
-string newVersion = lt.Manifest.Version;
-Check(Preferences.Load(fake.PreferencesPath).Version(id) == newVersion, $"Preferences.json has {id} {newVersion}");
+ScanResult Now() => Scanner.Scan(fake, Preferences.Load(fake.PreferencesPath), st);
 
-// Dropping the old zip under a different folder name still lands in the same folder.
-using (InstallPlan plan = Installer.Plan(fake, zipOld, now))
-{
-	Check(plan.Mods.Single().Target == lt.Folder, "an older zip targets the installed folder (same identifier)");
-	Installer.Apply(fake, st, plan, null, Log);
-}
-now = Scanner.Scan(fake, Preferences.Load(fake.PreferencesPath), st);
-string oldVersion = now.Single().Manifest.Version;
-Check(oldVersion != newVersion && Preferences.Load(fake.PreferencesPath).Version(id) == oldVersion, $"downgraded to {oldVersion}, Preferences.json follows");
-Check(Directory.GetFiles(fake.ArchiveDir).Length == 1, "archive keeps one zip per mod");
-Check(Installer.HasPrevious(now.Single().Key), "previous version kept");
+// SCOLD: three folders, one package, Preferences entries for each.
+Install(Download("SCOLD"));
+Check(Now().Packages.Count == 1 && Now().Mods.Count == 3, "SCOLD installs three folders as one package");
 
-Installer.RollBack(fake, st, now.Single(), Log);
-now = Scanner.Scan(fake, Preferences.Load(fake.PreferencesPath), st);
-Check(now.Single().Manifest.Version == newVersion && Preferences.Load(fake.PreferencesPath).Version(id) == newVersion, "rollback restores the newer version");
+// BMAN: GP38 pack (GP38Scripts 6.0.2), then SD38-2 (older GP38Scripts 6.0.0 inside): the newer library stays.
+Install(Download("GP38 6.0.2"));
+string scriptsBefore = Now().Mods.First(m => m.FolderName == "GP38Scripts").Manifest.Version;
+PackageRecord sd38 = Install(Download("SD38-2"));
+ScanResult s2 = Now();
+Check(s2.Mods.First(m => m.FolderName == "GP38Scripts").Manifest.Version == scriptsBefore, $"SD38-2's bundled GP38Scripts doesn't replace the newer {scriptsBefore}");
+Check(s2.Packages.Count(p => p.Shared.Count > 0) == 2, "GP38Scripts is shared by both BMAN packages");
+Installer.Uninstall(fake, st, s2.Packages.First(p => p.Record == sd38), Log);
+s2 = Now();
+Check(s2.Mods.Any(m => m.FolderName == "GP38Scripts") && !s2.Mods.Any(m => m.FolderName == "SD382"), "uninstalling SD38-2 keeps GP38Scripts (GP38 still uses it)");
 
-Installer.Uninstall(fake, st, now.Single(), Log);
-Check(Scanner.Scan(fake, null, st).Count == 0 && Preferences.Load(fake.PreferencesPath).Find(id) == null, "uninstall removes the folder and the Preferences entry");
+// LIRR GT-1: two mods two levels down become two top folders.
+Install(Download("LIRR GT 1"));
+Check(Now().Mods.Count(m => m.FolderName.StartsWith("LIRR GT-1")) == 2, "LIRR GT-1's nested mods install as two top folders");
 
-// A duplicate: the same mod in a second folder.
-using (InstallPlan plan = Installer.Plan(fake, zipNew, Scanner.Scan(fake, null, st)))
-{
-	Installer.Apply(fake, st, plan, null, Log);
-}
-string first = Scanner.Scan(fake, null, st).Single().Folder;
-CopyAll(first, Path.Combine(home, "Mods", "Some Other Name"));
-now = Scanner.Scan(fake, Preferences.Load(fake.PreferencesPath), st);
-Check(now.All(m => m.Notes.Any(n => n.StartsWith("Duplicate"))), "the same mod under two folder names is flagged on both");
+// A folder install (an unzipped download), then an older zip of it, then rollback.
+string unzipped = Path.Combine(data, "unzipped");
+Files.Extract(ltNew, unzipped);
+PackageRecord lt = Install(unzipped);
+Check(lt.Archive != null && File.Exists(lt.Archive) && lt.Archive.EndsWith(".zip"), $"a folder install is archived as a zip ({Path.GetFileName(lt.Archive)})");
+string ltVersion = Now().Mods.First(m => m.Key == "tetz95/diesel-traction").Manifest.Version;
+Install(ltOld);
+Check(st.Packages.Count(p => p.Members.Contains("tetz95/diesel-traction")) == 1, "an older zip of the same mod updates the same package");
+Check(Directory.GetFiles(fake.ArchiveDir).Count(f => Path.GetFileName(f).Contains("Locomotive Traction") || Path.GetFileName(f).Contains("Diesel")) == 1, "one archive per package");
+Installer.RollBack(fake, st, Now().Packages.First(p => p.Members.Any(m => m.Key == "tetz95/diesel-traction")), Log);
+Check(Now().Mods.First(m => m.Key == "tetz95/diesel-traction").Manifest.Version == ltVersion, "rollback restores the newer version");
 
+// An add-on: Freeman's placards into RexsToolBox, put back when RexsToolBox is reinstalled, removed with the add-on.
+string rexReal = Path.Combine(real.ModsDir, "RexsToolBox");
+string rexFake = Path.Combine(data, "rex-src", "RexsToolBox");
+Directory.CreateDirectory(rexFake);
+File.Copy(Path.Combine(rexReal, "Info.json"), Path.Combine(rexFake, "Info.json"));
+File.WriteAllText(Path.Combine(rexFake, "placeholder.txt"), "stand-in for Rex's files");
+Install(rexFake);
+PackageRecord addOn = Install(Download("Freeman RTB Placards"));
+string rexInstalled = Now().Mods.First(m => m.FolderName == "RexsToolBox").Folder;
+string aPlacard = Path.Combine(rexInstalled, addOn.Overlays.Values.First().First());
+Check(addOn.IsAddOn && File.Exists(aPlacard), $"the placards land in RexsToolBox ({addOn.Overlays.Values.First().Count} files)");
+Install(rexFake);
+Check(File.Exists(aPlacard), "reinstalling RexsToolBox puts the placards back");
+Installer.Uninstall(fake, st, Now().Packages.First(p => p.Record == addOn), Log);
+Check(!File.Exists(aPlacard) && File.Exists(Path.Combine(rexInstalled, "placeholder.txt")), "uninstalling the add-on removes only its files");
+
+// The same mod under another folder name is flagged.
+Files.CopyDirectory(Now().Mods.First(m => m.FolderName == "scold").Folder, Path.Combine(home, "Mods", "scold copy"));
+Check(Now().Mods.Where(m => m.Key == "scold/scold").All(m => m.Notes.Any(n => n.StartsWith("Duplicate"))), "the same mod under two folder names is flagged on both");
+
+Check(Preferences.Load(fake.PreferencesPath).Find("aggregate-production-loads") != null || Preferences.Load(fake.PreferencesPath).Serialize().Contains("scold/scold"), "Preferences.json has SCOLD's entries");
 Console.WriteLine(failures == 0 ? "ALL PASSED" : $"{failures} FAILED");
 return failures;
-
-static void CopyAll(string from, string to)
-{
-	foreach (string d in Directory.EnumerateDirectories(from, "*", SearchOption.AllDirectories))
-	{
-		Directory.CreateDirectory(Path.Combine(to, Path.GetRelativePath(from, d)));
-	}
-	Directory.CreateDirectory(to);
-	foreach (string f in Directory.EnumerateFiles(from, "*", SearchOption.AllDirectories))
-	{
-		File.Copy(f, Path.Combine(to, Path.GetRelativePath(from, f)));
-	}
-}

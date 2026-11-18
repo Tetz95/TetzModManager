@@ -14,13 +14,15 @@ public static partial class Versions
 		List<string> y = Token().Matches(b ?? "").Select(m => m.Value).ToList();
 		for (int i = 0; i < Math.Max(x.Count, y.Count); i++)
 		{
-			if (i >= x.Count)
+			// A missing part counts as 0 against a number ("1.0" = "1.0.0"); anything else makes the longer one newer.
+			if (i >= x.Count || i >= y.Count)
 			{
-				return -1;
-			}
-			if (i >= y.Count)
-			{
-				return 1;
+				string rest = i >= x.Count ? y[i] : x[i];
+				if (char.IsDigit(rest[0]) && decimal.Parse(rest) == 0)
+				{
+					continue;
+				}
+				return i >= x.Count ? -1 : 1;
 			}
 			bool nx = char.IsDigit(x[i][0]), ny = char.IsDigit(y[i][0]);
 			int c = nx && ny

@@ -3,16 +3,32 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="Tetz's Mod Manager" Width="1400" Height="900" MinWidth="900" MinHeight="500"
         AllowDrop="True" Drop="OnDrop" DragOver="OnDragOver" Loaded="OnLoaded">
+  <Window.Resources>
+    <Style x:Key="RowStyle" TargetType="DataGridRow">
+      <Style.Triggers>
+        <DataTrigger Binding="{Binding HasWarning}" Value="True">
+          <Setter Property="Background" Value="#FFF4E0" />
+        </DataTrigger>
+        <DataTrigger Binding="{Binding UpdateAvailable}" Value="True">
+          <Setter Property="Background" Value="#E6F2FF" />
+        </DataTrigger>
+        <DataTrigger Binding="{Binding IsDisabled}" Value="True">
+          <Setter Property="Foreground" Value="#888" />
+        </DataTrigger>
+      </Style.Triggers>
+    </Style>
+  </Window.Resources>
   <DockPanel>
     <ToolBarTray DockPanel.Dock="Top">
       <ToolBar>
         <Button Content="Refresh" Click="OnRefresh" ToolTip="Read the Mods folder and Preferences.json again" />
-        <Button Content="Install archive..." Click="OnInstallArchive" ToolTip="Install a mod from a zip (or 7z/rar). Dropping archives on the window does the same." />
+        <Button Content="Install archive..." Click="OnInstallArchive" ToolTip="Install from a zip, 7z or rar. Archives and folders dropped on the window install too." />
+        <Button Content="Install folder..." Click="OnInstallFolder" ToolTip="Install an unzipped download (a folder holding one or more mod folders)" />
         <Separator />
-        <Button Content="Check for updates" Click="OnCheckUpdates" ToolTip="Ask Nexus for the newest file of every linked mod" />
+        <Button Content="Check for updates" Click="OnCheckUpdates" ToolTip="Ask Nexus for the newest file of every linked package" />
         <Button x:Name="UpdateAllButton" Content="Update all" Click="OnUpdateAll" IsEnabled="False" />
         <Separator />
-        <Button Content="Link from Vortex downloads" Click="OnVortexImport" ToolTip="Match installed mods to their Nexus pages from Vortex's download folder" />
+        <Button Content="Import from Vortex" Click="OnVortexImport" ToolTip="Group installed mods into packages and link them to Nexus from Vortex's downloads" />
         <Separator />
         <Button Content="Mods folder" Click="OnOpenMods" />
         <Button Content="Archive folder" Click="OnOpenArchive" />
@@ -36,53 +52,40 @@
         <RowDefinition Height="Auto" />
         <RowDefinition Height="*" />
         <RowDefinition Height="5" />
-        <RowDefinition Height="260" />
+        <RowDefinition Height="320" />
       </Grid.RowDefinitions>
       <StackPanel Orientation="Horizontal" Margin="0,0,0,6">
         <TextBlock Text="Find:" VerticalAlignment="Center" Margin="0,0,6,0" />
         <TextBox x:Name="FilterBox" Width="260" TextChanged="OnFilterChanged" />
-        <ComboBox x:Name="ViewBox" Width="220" Margin="10,0,0,0" SelectionChanged="OnFilterChanged">
-          <ComboBoxItem Content="All mods" IsSelected="True" />
+        <ComboBox x:Name="ViewBox" Width="240" Margin="10,0,0,0" SelectionChanged="OnFilterChanged">
+          <ComboBoxItem Content="All packages" IsSelected="True" />
           <ComboBoxItem Content="Updates available" />
           <ComboBoxItem Content="With notes" />
           <ComboBoxItem Content="Duplicates" />
           <ComboBoxItem Content="Disabled" />
+          <ComboBoxItem Content="Several mods in one package" />
+          <ComboBoxItem Content="Add-ons" />
           <ComboBoxItem Content="Not linked to Nexus" />
           <ComboBoxItem Content="Deployed by Vortex" />
         </ComboBox>
       </StackPanel>
       <DataGrid x:Name="Grid" Grid.Row="1" AutoGenerateColumns="False" IsReadOnly="True" SelectionMode="Extended"
                 CanUserAddRows="False" HeadersVisibility="Column" GridLinesVisibility="Horizontal"
-                HorizontalGridLinesBrush="#DDD" SelectionChanged="OnSelectionChanged" EnableRowVirtualization="True">
-        <DataGrid.RowStyle>
-          <Style TargetType="DataGridRow">
-            <Style.Triggers>
-              <DataTrigger Binding="{Binding HasWarning}" Value="True">
-                <Setter Property="Background" Value="#FFF4E0" />
-              </DataTrigger>
-              <DataTrigger Binding="{Binding UpdateAvailable}" Value="True">
-                <Setter Property="Background" Value="#E6F2FF" />
-              </DataTrigger>
-              <DataTrigger Binding="{Binding IsDisabled}" Value="True">
-                <Setter Property="Foreground" Value="#888" />
-              </DataTrigger>
-            </Style.Triggers>
-          </Style>
-        </DataGrid.RowStyle>
+                HorizontalGridLinesBrush="#DDD" SelectionChanged="OnSelectionChanged" RowStyle="{StaticResource RowStyle}">
         <DataGrid.Columns>
           <DataGridTemplateColumn Header="On" SortMemberPath="EnabledSort" Width="38">
             <DataGridTemplateColumn.CellTemplate>
               <DataTemplate>
                 <CheckBox IsChecked="{Binding Enabled, Mode=OneWay}" IsEnabled="{Binding CanToggle}" HorizontalAlignment="Center"
-                          Click="OnToggleEnabled" ToolTip="{Binding EnabledTip}" />
+                          IsThreeState="False" Click="OnTogglePackage" ToolTip="{Binding EnabledTip}" />
               </DataTemplate>
             </DataGridTemplateColumn.CellTemplate>
           </DataGridTemplateColumn>
           <DataGridTextColumn Header="Name" Binding="{Binding Name}" Width="260" />
-          <DataGridTextColumn Header="Version" Binding="{Binding Version}" Width="90" />
-          <DataGridTextColumn Header="Newest" Binding="{Binding Latest}" Width="80" />
+          <DataGridTextColumn Header="Version" Binding="{Binding Version}" Width="100" />
+          <DataGridTextColumn Header="Newest" Binding="{Binding Latest}" Width="70" />
           <DataGridTextColumn Header="Author" Binding="{Binding Author}" Width="130" />
-          <DataGridTextColumn Header="Identifier" Binding="{Binding Key}" Width="230" />
+          <DataGridTextColumn Header="Contents" Binding="{Binding Contents}" Width="240" />
           <DataGridTextColumn Header="Nexus" Binding="{Binding NexusId}" Width="55" />
           <DataGridTextColumn Header="Notes" Binding="{Binding NotesText}" Width="*" />
         </DataGrid.Columns>
@@ -90,22 +93,39 @@
       <GridSplitter Grid.Row="2" HorizontalAlignment="Stretch" Background="#EEE" />
       <Grid Grid.Row="3">
         <Grid.ColumnDefinitions>
-          <ColumnDefinition Width="*" />
+          <ColumnDefinition Width="3*" />
           <ColumnDefinition Width="5" />
-          <ColumnDefinition Width="*" />
+          <ColumnDefinition Width="2*" />
         </Grid.ColumnDefinitions>
         <DockPanel Margin="0,4,6,0">
           <WrapPanel DockPanel.Dock="Bottom" Margin="0,6,0,0">
             <Button x:Name="UpdateButton" Content="Update" Click="OnUpdateSelected" />
             <Button x:Name="NexusButton" Content="Nexus page" Click="OnNexusPage" />
             <Button x:Name="LinkButton" Content="Link to Nexus..." Click="OnLink" />
-            <Button x:Name="FolderButton" Content="Open folder" Click="OnOpenFolder" />
+            <Button x:Name="FolderButton" Content="Open folder" Click="OnOpenFolder" ToolTip="Open the selected mod's folder (or the package's first)" />
             <Button x:Name="RollBackButton" Content="Roll back" Click="OnRollBack" />
             <Button x:Name="UninstallButton" Content="Uninstall" Click="OnUninstall" />
           </WrapPanel>
-          <ScrollViewer VerticalScrollBarVisibility="Auto">
-            <TextBox x:Name="Details" IsReadOnly="True" TextWrapping="Wrap" BorderThickness="0" Background="Transparent" />
-          </ScrollViewer>
+          <TextBox x:Name="Details" DockPanel.Dock="Top" IsReadOnly="True" TextWrapping="Wrap" BorderThickness="0" Background="Transparent"
+                   MaxHeight="120" VerticalScrollBarVisibility="Auto" />
+          <DataGrid x:Name="MembersGrid" AutoGenerateColumns="False" IsReadOnly="True" HeadersVisibility="Column" Margin="0,6,0,0"
+                    GridLinesVisibility="Horizontal" HorizontalGridLinesBrush="#DDD" RowStyle="{StaticResource RowStyle}">
+            <DataGrid.Columns>
+              <DataGridTemplateColumn Header="On" Width="38">
+                <DataGridTemplateColumn.CellTemplate>
+                  <DataTemplate>
+                    <CheckBox IsChecked="{Binding Enabled, Mode=OneWay}" IsEnabled="{Binding CanToggle}" HorizontalAlignment="Center"
+                              Click="OnToggleMember" ToolTip="{Binding EnabledTip}" />
+                  </DataTemplate>
+                </DataGridTemplateColumn.CellTemplate>
+              </DataGridTemplateColumn>
+              <DataGridTextColumn Header="Mod" Binding="{Binding Name}" Width="200" />
+              <DataGridTextColumn Header="Version" Binding="{Binding Version}" Width="70" />
+              <DataGridTextColumn Header="Identifier" Binding="{Binding Key}" Width="200" />
+              <DataGridTextColumn Header="Folder" Binding="{Binding Folder}" Width="160" />
+              <DataGridTextColumn Header="Notes" Binding="{Binding NotesText}" Width="*" />
+            </DataGrid.Columns>
+          </DataGrid>
         </DockPanel>
         <GridSplitter Grid.Column="1" HorizontalAlignment="Stretch" Background="#EEE" />
         <TextBox x:Name="LogBox" Grid.Column="2" Margin="6,4,0,0" IsReadOnly="True" TextWrapping="Wrap"

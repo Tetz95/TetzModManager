@@ -3,7 +3,23 @@ using System.IO.Compression;
 
 namespace TetzModManager;
 
-/// <summary>One mod found in an archive, and where it will go.</summary>
+public enum PlanAction
+{
+	/// <summary>Not installed yet.</summary>
+	Install,
+	/// <summary>Newer than the installed copy.</summary>
+	Update,
+	/// <summary>The same version as installed (copied again, except for a shared library).</summary>
+	Reinstall,
+	/// <summary>Older than the installed copy (asked first).</summary>
+	Downgrade,
+	/// <summary>A library another installed package carries too, already at this version or newer: left as it is.</summary>
+	KeepInstalled,
+	/// <summary>Another mod already uses the folder.</summary>
+	Blocked,
+}
+
+/// <summary>One mod found in an archive, and what installing it does.</summary>
 public sealed class PlannedMod
 {
 	public required ModManifest Manifest { get; init; }
@@ -12,219 +28,439 @@ public sealed class PlannedMod
 	/// <summary>The folder in Mods it goes to: the installed copy's folder when the mod is already installed.</summary>
 	public required string Target { get; init; }
 	public InstalledMod? Existing { get; init; }
-	/// <summary>Why it can't be installed (another mod already uses the target folder), or null.</summary>
-	public string? Blocked { get; init; }
-	public bool ReplacesVortexFolder => Existing?.VortexManaged == true || File.Exists(Path.Combine(Target, Scanner.VortexMarker));
+	public required PlanAction Action { get; init; }
+	/// <summary>Carried by another installed package too (a bundled library such as GP38Scripts).</summary>
+	public bool Shared { get; init; }
+	public string? Reason { get; init; }
+	public bool Copies => Action is PlanAction.Install or PlanAction.Update or PlanAction.Reinstall or PlanAction.Downgrade;
+	public bool ReplacesVortexFolder => Copies && (Existing?.VortexManaged == true || File.Exists(Path.Combine(Target, Scanner.VortexMarker)));
+}
+
+/// <summary>Add-on files for an installed mod's folder (an archive without an Info.json whose top folder is that mod's folder).</summary>
+public sealed class PlannedOverlay
+{
+	public required InstalledMod Target { get; init; }
+	public required string Source { get; init; }
+	public required List<string> Files { get; init; }
 }
 
 public sealed class InstallPlan : IDisposable
 {
-	public required string ArchivePath { get; init; }
+	/// <summary>The archive, or the folder dropped on the window.</summary>
+	public required string SourcePath { get; init; }
+	public bool IsFolder { get; init; }
 	public required string ExtractDir { get; init; }
+	public bool OwnsExtractDir { get; init; }
 	public List<PlannedMod> Mods { get; } = [];
+	public List<PlannedOverlay> Overlays { get; } = [];
+	/// <summary>The installed package this one updates (the one carrying the same mods), or null for a new package.</summary>
+	public PackageRecord? Package { get; set; }
+	public string Name { get; set; } = "";
 
 	public void Dispose()
 	{
-		try
+		if (OwnsExtractDir)
 		{
-			if (Directory.Exists(ExtractDir))
-			{
-				Directory.Delete(ExtractDir, true);
-			}
-		}
-		catch (IOException)
-		{
+			Files.TryDeleteDirectory(ExtractDir);
 		}
 	}
 }
 
-/// <summary>Where an install came from, kept with the mod's record.</summary>
+/// <summary>Where an install came from, kept with the package.</summary>
 public sealed record NexusSource(int ModId, int FileId, string FileName, string? FileVersion);
 
 public static class Installer
 {
-	private static readonly string SevenZip = @"C:\Program Files\7-Zip\7z.exe";
-
-	/// <summary>Extracts the archive and works out each mod in it (a folder holding Info.json; the archive root counts).</summary>
-	public static InstallPlan Plan(Settings settings, string archive, IReadOnlyList<InstalledMod> installed)
+	/// <summary>Extracts the archive (or takes the folder) and works out every mod in it and what installing does.</summary>
+	public static InstallPlan Plan(Settings settings, string source, ScanResult installed, StateStore state, int? nexusModId = null)
 	{
-		string extract = Path.Combine(Settings.WorkDir, Guid.NewGuid().ToString("N")[..12]);
-		Directory.CreateDirectory(extract);
-		InstallPlan plan = new() { ArchivePath = archive, ExtractDir = extract };
+		bool isFolder = Directory.Exists(source);
+		string extract = isFolder ? source : Path.Combine(Settings.WorkDir, Guid.NewGuid().ToString("N")[..12]);
+		InstallPlan plan = new() { SourcePath = source, IsFolder = isFolder, ExtractDir = extract, OwnsExtractDir = !isFolder };
 		try
 		{
-			Extract(archive, extract);
-			string baseName = CleanName(Path.GetFileNameWithoutExtension(archive));
-			foreach (string root in FindRoots(extract))
+			if (!isFolder)
 			{
-				ModManifest? m = ModManifest.ReadFolder(root);
-				if (m == null)
-				{
-					continue;
-				}
-				InstalledMod? existing = installed.FirstOrDefault(i => string.Equals(i.Key, m.Key, StringComparison.OrdinalIgnoreCase));
-				string folderName = root == extract ? SafeFolderName(m.Name, baseName) : Path.GetFileName(root);
-				string target = existing?.Folder ?? Path.Combine(settings.ModsDir, folderName);
-				string? blocked = null;
-				if (existing == null)
-				{
-					InstalledMod? occupant = installed.FirstOrDefault(i => string.Equals(i.Folder, target, StringComparison.OrdinalIgnoreCase));
-					if (occupant != null)
-					{
-						blocked = $"The folder \"{folderName}\" already holds {occupant.Manifest.Name} ({occupant.Key}).";
-					}
-				}
-				plan.Mods.Add(new PlannedMod { Manifest = m, Source = root, Target = target, Existing = existing, Blocked = blocked });
+				Directory.CreateDirectory(extract);
+				Files.Extract(source, extract);
 			}
+			List<(string Root, ModManifest Manifest)> found = Files.FindRoots(extract)
+				.Select(r => (r, ModManifest.ReadFolder(r)))
+				.Where(x => x.Item2 != null)
+				.Select(x => (x.r, x.Item2!))
+				.ToList();
+			plan.Package = state.Match(found.Select(f => f.Manifest).ToList(),
+				k => installed.Mods.FirstOrDefault(m => string.Equals(m.Key, k, StringComparison.OrdinalIgnoreCase))?.Manifest, nexusModId);
+			foreach ((string root, ModManifest m) in found)
+			{
+				plan.Mods.Add(PlanMod(settings, plan, root, m, installed, state));
+			}
+			if (found.Count == 0)
+			{
+				PlanOverlays(plan, installed);
+			}
+			plan.Name = plan.Package?.Name
+				?? plan.Mods.Where(p => !p.Shared).Select(p => p.Manifest.Name).FirstOrDefault()
+				?? plan.Mods.Select(p => p.Manifest.Name).FirstOrDefault()
+				?? CleanName(Path.GetFileNameWithoutExtension(source.TrimEnd('\\', '/')));
 		}
 		catch
 		{
 			plan.Dispose();
 			throw;
 		}
-		if (plan.Mods.Count == 0)
+		if (plan.Mods.Count == 0 && plan.Overlays.Count == 0)
 		{
 			plan.Dispose();
-			throw new InvalidDataException($"No mod found in {Path.GetFileName(archive)} (no folder with an Info.json).");
+			throw new InvalidDataException($"Nothing to install in {Path.GetFileName(source.TrimEnd('\\', '/'))}: no folder with an Info.json, and no top folder named like an installed mod's folder.");
 		}
 		return plan;
 	}
 
+	private static PlannedMod PlanMod(Settings settings, InstallPlan plan, string root, ModManifest m, ScanResult installed, StateStore state)
+	{
+		InstalledMod? existing = installed.Mods.FirstOrDefault(i => string.Equals(i.Key, m.Key, StringComparison.OrdinalIgnoreCase));
+		string folderName = root == plan.ExtractDir && !plan.IsFolder ? SafeFolderName(m.Name, CleanName(Path.GetFileNameWithoutExtension(plan.SourcePath))) : Path.GetFileName(root);
+		string target = existing?.Folder ?? Path.Combine(settings.ModsDir, folderName);
+		if (existing == null)
+		{
+			InstalledMod? occupant = installed.Mods.FirstOrDefault(i => string.Equals(i.Folder, target, StringComparison.OrdinalIgnoreCase));
+			if (occupant != null)
+			{
+				return new PlannedMod
+				{
+					Manifest = m, Source = root, Target = target, Action = PlanAction.Blocked,
+					Reason = $"the folder \"{folderName}\" already holds {occupant.Manifest.Name} ({occupant.Key})",
+				};
+			}
+			return new PlannedMod { Manifest = m, Source = root, Target = target, Action = PlanAction.Install };
+		}
+		// Shared: some other installed package carries it too.
+		bool shared = state.WithMember(m.Key).Any(p => p != plan.Package
+			&& installed.Packages.Any(ip => ip.Record == p && ip.Members.Count > 0));
+		int c = Versions.Compare(m.Version, existing.Manifest.Version);
+		if (shared && c <= 0)
+		{
+			return new PlannedMod
+			{
+				Manifest = m, Source = root, Target = target, Existing = existing, Shared = true, Action = PlanAction.KeepInstalled,
+				Reason = c == 0 ? "already installed at this version" : $"the installed {existing.Manifest.Version} is newer",
+			};
+		}
+		return new PlannedMod
+		{
+			Manifest = m, Source = root, Target = target, Existing = existing, Shared = shared,
+			Action = c > 0 ? PlanAction.Update : c < 0 ? PlanAction.Downgrade : PlanAction.Reinstall,
+		};
+	}
+
+	/// <summary>An archive without mods: top folders named like installed mods' folders (through wrapper folders) are add-ons.</summary>
+	private static void PlanOverlays(InstallPlan plan, ScanResult installed)
+	{
+		string dir = plan.ExtractDir;
+		for (int depth = 0; depth < 3; depth++)
+		{
+			foreach (string sub in Directory.EnumerateDirectories(dir))
+			{
+				InstalledMod? target = installed.Mods.FirstOrDefault(m => string.Equals(m.FolderName, Path.GetFileName(sub), StringComparison.OrdinalIgnoreCase));
+				if (target != null)
+				{
+					plan.Overlays.Add(new PlannedOverlay
+					{
+						Target = target,
+						Source = sub,
+						Files = Directory.EnumerateFiles(sub, "*", SearchOption.AllDirectories).Select(f => Path.GetRelativePath(sub, f)).ToList(),
+					});
+				}
+			}
+			string[] subs = Directory.GetDirectories(dir);
+			if (plan.Overlays.Count > 0 || subs.Length != 1 || Directory.EnumerateFiles(dir).Any())
+			{
+				return;
+			}
+			dir = subs[0];
+		}
+	}
+
 	/// <summary>
-	/// Installs the planned mods: the current folder is moved to the rollback folder, the new files are copied in (plain
-	/// copies, no links), Preferences.json gets the version (or a new enabled entry), and the archive is filed.
+	/// Installs a plan: each copied mod's current folder is kept for rollback and the new files copied in (plain copies);
+	/// Preferences.json gets the version (or a new enabled entry); add-on files go into their mods' folders; other
+	/// packages' add-ons for a replaced mod are put back; the package is recorded and its archive filed.
 	/// </summary>
-	public static List<string> Apply(Settings settings, StateStore state, InstallPlan plan, NexusSource? nexus, Action<string> log)
+	public static PackageRecord Apply(Settings settings, StateStore state, InstallPlan plan, NexusSource? nexus, Action<string> log)
 	{
 		Game.EnsureClosed(settings);
 		Preferences prefs = Preferences.Load(settings.PreferencesPath);
-		List<string> keys = [];
+		List<string> replaced = [];
 		foreach (PlannedMod p in plan.Mods)
 		{
-			if (p.Blocked != null)
+			if (!p.Copies)
 			{
-				log($"Skipped {p.Manifest.Name}: {p.Blocked}");
+				log($"  {p.Manifest.Name} {p.Manifest.Version}: {(p.Action == PlanAction.Blocked ? "skipped" : "left as it is")}, {p.Reason}");
 				continue;
 			}
-			string? previous = null;
+			bool kept = false;
 			if (Directory.Exists(p.Target))
 			{
-				previous = KeepPrevious(p.Target, p.Manifest.Key);
+				KeepPrevious(p.Target, p.Manifest.Key);
+				kept = true;
+				replaced.Add(p.Manifest.Key);
 			}
-			CopyDirectory(p.Source, p.Target);
-			string what = p.Existing == null ? $"Installed {p.Manifest.Name} {p.Manifest.Version}" : $"Replaced {p.Manifest.Name} {p.Existing.Manifest.Version} with {p.Manifest.Version}";
-			log($"{what} in \"{Path.GetFileName(p.Target)}\"" + (previous != null ? " (previous version kept for rollback)" : ""));
-			if (p.Manifest.Identifier is string id)
+			Files.CopyDirectory(p.Source, p.Target);
+			string what = p.Existing == null ? $"Installed {p.Manifest.Name} {p.Manifest.Version}" : $"{p.Action} {p.Manifest.Name} {p.Existing.Manifest.Version} -> {p.Manifest.Version}";
+			log($"  {what} in \"{Path.GetFileName(p.Target)}\"" + (kept ? " (previous kept for rollback)" : ""));
+			if (p.Manifest.Identifier is string id && prefs.SetVersionOrAdd(id, p.Manifest.Version, p.Manifest.Scope))
 			{
-				bool added = prefs.SetVersionOrAdd(id, p.Manifest.Version, p.Manifest.Scope);
-				if (added)
-				{
-					log($"  added {id} to Preferences.json, enabled");
-				}
+				log($"    added {id} to Preferences.json, enabled");
 			}
-			ModRecord r = state.Get(p.Manifest.Key);
-			r.InstalledVersion = p.Manifest.Version;
-			r.InstalledAt = DateTime.Now;
-			if (nexus == null)
-			{
-				r.InstalledNexusVersion = null;
-				r.NexusFileId = null;
-			}
-			else
-			{
-				r.NexusModId = nexus.ModId;
-				r.NexusFileId = nexus.FileId;
-				r.NexusFileName = nexus.FileName;
-				r.InstalledNexusVersion = nexus.FileVersion;
-				r.LinkSource = "nxm";
-				if (r.LatestFileId == nexus.FileId || (r.LatestVersion != null && Versions.Compare(r.LatestVersion, p.Manifest.Version) <= 0))
-				{
-					r.LatestVersion = p.Manifest.Version;
-					r.LatestFileId = nexus.FileId;
-				}
-			}
-			keys.Add(p.Manifest.Key);
 		}
-		if (keys.Count > 0)
+		foreach (PlannedOverlay o in plan.Overlays)
 		{
-			prefs.Save();
-			string archived = ModArchive.Store(settings, state, plan.ArchivePath, keys, nexus?.FileName);
-			log($"  archive: {archived}");
+			CopyFiles(o.Source, o.Target.Folder, o.Files);
+			log($"  Added {o.Files.Count} files to {o.Target.Manifest.Name} (\"{o.Target.FolderName}\")");
 		}
+
+		PackageRecord rec = plan.Package ?? new PackageRecord();
+		if (plan.Package == null)
+		{
+			state.Packages.Add(rec);
+		}
+		rec.Members = plan.Mods.Where(p => p.Action != PlanAction.Blocked).Select(p => p.Manifest.Key).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+		rec.Overlays = plan.Overlays.ToDictionary(o => o.Target.Key, o => o.Files, StringComparer.OrdinalIgnoreCase);
+		rec.Name = rec.IsAddOn ? plan.Name : null;
+		rec.Source = nexus != null ? "nxm" : plan.IsFolder ? "folder" : "zip";
+		rec.SourceName = nexus?.FileName ?? Path.GetFileName(plan.SourcePath.TrimEnd('\\', '/'));
+		rec.InstalledAt = DateTime.Now;
+		if (nexus != null)
+		{
+			rec.NexusModId = nexus.ModId;
+			rec.NexusFileId = nexus.FileId;
+			rec.NexusFileName = nexus.FileName;
+			rec.InstalledNexusVersion = nexus.FileVersion;
+			rec.LinkSource = "nxm";
+			if (rec.LatestFileId == nexus.FileId || (rec.LatestVersion != null && Versions.Compare(rec.LatestVersion, nexus.FileVersion) <= 0))
+			{
+				rec.LatestVersion = nexus.FileVersion;
+				rec.LatestFileId = nexus.FileId;
+			}
+		}
+		else
+		{
+			// A local archive: the Nexus page stays linked, but which file it is isn't known.
+			rec.NexusFileId = null;
+			rec.InstalledNexusVersion = null;
+		}
+
+		ReapplyAddOns(state, rec, replaced, plan, log);
+		prefs.Save();
+		string archived = ModArchive.Store(settings, state, rec, plan, nexus?.FileName);
+		log($"  archive: {archived}");
 		state.Save();
-		return keys;
+		return rec;
 	}
 
-	/// <summary>Moves a mod's folder out of Mods, and the copy kept from before back in.</summary>
-	public static void RollBack(Settings settings, StateStore state, InstalledMod mod, Action<string> log)
+	/// <summary>Other packages' add-on files for mods that were just replaced, copied in again from their archives.</summary>
+	private static void ReapplyAddOns(StateStore state, PackageRecord current, List<string> replaced, InstallPlan plan, Action<string> log)
+	{
+		foreach (PackageRecord addOn in state.Packages.Where(p => p != current && p.Overlays.Keys.Any(k => replaced.Contains(k, StringComparer.OrdinalIgnoreCase))))
+		{
+			if (addOn.Archive == null || !File.Exists(addOn.Archive))
+			{
+				log($"  ! {addOn.Name ?? addOn.Id}'s files for a replaced mod can't be put back: its archive is missing");
+				continue;
+			}
+			string tmp = Path.Combine(Settings.WorkDir, Guid.NewGuid().ToString("N")[..12]);
+			try
+			{
+				Files.Extract(addOn.Archive, tmp);
+				foreach ((string key, List<string> files) in addOn.Overlays.Where(kv => replaced.Contains(kv.Key, StringComparer.OrdinalIgnoreCase)))
+				{
+					PlannedMod target = plan.Mods.First(m => string.Equals(m.Manifest.Key, key, StringComparison.OrdinalIgnoreCase));
+					string folderName = Path.GetFileName(target.Target);
+					string? src = Directory.EnumerateDirectories(tmp, "*", SearchOption.AllDirectories)
+						.Where(d => string.Equals(Path.GetFileName(d), folderName, StringComparison.OrdinalIgnoreCase))
+						.OrderBy(d => d.Length).FirstOrDefault();
+					if (src == null)
+					{
+						log($"  ! {addOn.Name}: no \"{folderName}\" folder in its archive");
+						continue;
+					}
+					CopyFiles(src, target.Target, files);
+					log($"  Put back {addOn.Name}'s {files.Count} files in \"{folderName}\"");
+				}
+			}
+			finally
+			{
+				Files.TryDeleteDirectory(tmp);
+			}
+		}
+	}
+
+	/// <summary>Puts back each mod's previous copy (the current one is kept instead, so it can be undone the same way).</summary>
+	public static void RollBack(Settings settings, StateStore state, InstalledPackage package, Action<string> log)
 	{
 		Game.EnsureClosed(settings);
-		string kept = PreviousPath(mod.Key);
-		if (!Directory.Exists(kept))
+		List<InstalledMod> mods = package.Members.Where(m => HasPrevious(m.Key)).ToList();
+		if (mods.Count == 0)
 		{
-			throw new InvalidOperationException($"No earlier version of {mod.Manifest.Name} is kept.");
+			throw new InvalidOperationException($"No earlier version of {package.Name} is kept.");
 		}
-		ModManifest back = ModManifest.ReadFolder(kept) ?? throw new InvalidDataException("The kept copy has no readable Info.json.");
-		string swap = kept + ".swap";
-		MoveDirectory(mod.Folder, swap);
-		MoveDirectory(kept, mod.Folder);
-		MoveDirectory(swap, kept);
-		if (back.Identifier is string id)
+		Preferences prefs = Preferences.Load(settings.PreferencesPath);
+		foreach (InstalledMod mod in mods)
 		{
-			Preferences prefs = Preferences.Load(settings.PreferencesPath);
-			prefs.SetVersionOrAdd(id, back.Version, back.Scope);
-			prefs.Save();
+			string kept = PreviousPath(mod.Key);
+			ModManifest back = ModManifest.ReadFolder(kept) ?? throw new InvalidDataException($"The kept copy of {mod.Manifest.Name} has no readable Info.json.");
+			string swap = kept + ".swap";
+			Files.MoveDirectory(mod.Folder, swap);
+			Files.MoveDirectory(kept, mod.Folder);
+			Files.MoveDirectory(swap, kept);
+			if (back.Identifier is string id)
+			{
+				prefs.SetVersionOrAdd(id, back.Version, back.Scope);
+			}
+			log($"Rolled back {mod.Manifest.Name}: {mod.Manifest.Version} -> {back.Version}");
 		}
-		ModRecord r = state.Get(mod.Key);
-		r.InstalledVersion = back.Version;
-		r.NexusFileId = null;
-		r.InstalledNexusVersion = null;
-		state.Save();
-		log($"Rolled back {mod.Manifest.Name}: {mod.Manifest.Version} -> {back.Version} (the newer one is kept, so this can be undone the same way)");
+		prefs.Save();
+		if (package.Record != null)
+		{
+			package.Record.NexusFileId = null;
+			package.Record.InstalledNexusVersion = null;
+			state.Save();
+		}
 	}
 
 	public static bool HasPrevious(string key) => Directory.Exists(PreviousPath(key));
 
-	/// <summary>Moves the folder out of Mods (kept for rollback) and drops the Preferences.json entry.</summary>
-	public static void Uninstall(Settings settings, StateStore state, InstalledMod mod, Action<string> log)
+	/// <summary>
+	/// Uninstalls a package: its own mods move out of Mods (kept for rollback) and leave Preferences.json; libraries
+	/// another installed package carries stay; its add-on files are deleted. The archive stays.
+	/// </summary>
+	public static void Uninstall(Settings settings, StateStore state, InstalledPackage package, Action<string> log)
 	{
 		Game.EnsureClosed(settings);
-		KeepPrevious(mod.Folder, mod.Key);
-		if (mod.Manifest.Identifier is string id)
+		Preferences prefs = Preferences.Load(settings.PreferencesPath);
+		foreach (InstalledMod mod in package.Own)
 		{
-			Preferences prefs = Preferences.Load(settings.PreferencesPath);
-			if (prefs.Remove(id))
+			KeepPrevious(mod.Folder, mod.Key);
+			if (mod.Manifest.Identifier is string id)
 			{
-				prefs.Save();
+				prefs.Remove(id);
 			}
+			log($"Uninstalled {mod.Manifest.Name} {mod.Manifest.Version} (\"{mod.FolderName}\")");
 		}
-		ModRecord? r = state.Find(mod.Key);
-		if (r != null)
+		foreach (InstalledMod mod in package.Members.Where(m => package.Shared.Contains(m.Key)))
 		{
-			r.InstalledVersion = null;
-			r.InstalledAt = null;
-			state.Save();
+			log($"Kept {mod.Manifest.Name}: another installed package uses it");
 		}
-		log($"Uninstalled {mod.Manifest.Name} (its folder is kept in {PreviousPath(mod.Key)}, its archive stays)");
+		if (package.Record != null)
+		{
+			ScanResult now = Scanner.Scan(settings, null, state);
+			foreach ((string key, List<string> files) in package.Record.Overlays)
+			{
+				InstalledMod? target = now.Mods.FirstOrDefault(m => string.Equals(m.Key, key, StringComparison.OrdinalIgnoreCase));
+				if (target == null)
+				{
+					continue;
+				}
+				foreach (string f in files)
+				{
+					string path = Path.Combine(target.Folder, f);
+					if (File.Exists(path))
+					{
+						File.Delete(path);
+					}
+				}
+				log($"Removed {files.Count} add-on files from \"{target.FolderName}\"");
+			}
+			state.Packages.Remove(package.Record);
+		}
+		prefs.Save();
+		state.Save();
 	}
 
 	private static string PreviousPath(string key) =>
 		Path.Combine(Settings.PreviousDir, string.Concat(key.Select(c => Path.GetInvalidFileNameChars().Contains(c) || c == ':' ? '_' : c)));
 
-	private static string KeepPrevious(string folder, string key)
+	private static void KeepPrevious(string folder, string key)
 	{
 		string dest = PreviousPath(key);
 		Directory.CreateDirectory(Settings.PreviousDir);
-		if (Directory.Exists(dest))
+		Files.TryDeleteDirectory(dest);
+		Files.MoveDirectory(folder, dest);
+	}
+
+	private static void CopyFiles(string from, string to, List<string> files)
+	{
+		foreach (string f in files)
 		{
-			DeleteDirectory(dest);
+			string dest = Path.Combine(to, f);
+			Directory.CreateDirectory(Path.GetDirectoryName(dest)!);
+			File.Copy(Path.Combine(from, f), dest, true);
 		}
-		MoveDirectory(folder, dest);
+	}
+
+	public static string CleanName(string archiveName) =>
+		System.Text.RegularExpressions.Regex.Replace(archiveName, @"[\s_-]+v?\d+(\.\d+)*[a-z]?(\s*\(.*\))?$", "").Trim();
+
+	private static string SafeFolderName(string name, string fallback)
+	{
+		string s = string.Concat(name.Select(c => Path.GetInvalidFileNameChars().Contains(c) ? '_' : c)).Trim().TrimEnd('.');
+		return s.Length > 0 ? s : fallback;
+	}
+}
+
+/// <summary>The archive folder: one archive per package. A dropped folder is zipped into it.</summary>
+public static class ModArchive
+{
+	public static string Store(Settings settings, StateStore state, PackageRecord rec, InstallPlan plan, string? name)
+	{
+		Directory.CreateDirectory(settings.ArchiveDir);
+		string fileName = name ?? (plan.IsFolder
+			? Safe($"{plan.Name} {plan.Mods.FirstOrDefault(m => !m.Shared)?.Manifest.Version ?? plan.Mods.FirstOrDefault()?.Manifest.Version}".Trim()) + ".zip"
+			: Path.GetFileName(plan.SourcePath));
+		string dest = Path.Combine(settings.ArchiveDir, fileName);
+		// Another package's archive with the same name stays: this one gets a numbered name.
+		for (int n = 2; state.Packages.Any(p => p != rec && string.Equals(p.Archive, dest, StringComparison.OrdinalIgnoreCase)); n++)
+		{
+			dest = Path.Combine(settings.ArchiveDir, $"{Path.GetFileNameWithoutExtension(fileName)} ({n}){Path.GetExtension(fileName)}");
+		}
+		if (plan.IsFolder)
+		{
+			File.Delete(dest);
+			ZipFile.CreateFromDirectory(plan.SourcePath, dest, CompressionLevel.Optimal, includeBaseDirectory: true);
+		}
+		else if (!string.Equals(Path.GetFullPath(plan.SourcePath), Path.GetFullPath(dest), StringComparison.OrdinalIgnoreCase))
+		{
+			File.Copy(plan.SourcePath, dest, true);
+		}
+		Replace(state, rec, dest);
 		return dest;
 	}
 
+	/// <summary>Points the package at its new archive and deletes the old one unless another package still uses it.</summary>
+	public static void Replace(StateStore state, PackageRecord rec, string dest)
+	{
+		string? old = rec.Archive;
+		rec.Archive = dest;
+		if (old != null && !string.Equals(old, dest, StringComparison.OrdinalIgnoreCase)
+			&& !state.Packages.Any(p => string.Equals(p.Archive, old, StringComparison.OrdinalIgnoreCase))
+			&& File.Exists(old))
+		{
+			File.Delete(old);
+		}
+	}
+
+	private static string Safe(string s) => string.Concat(s.Select(c => Path.GetInvalidFileNameChars().Contains(c) ? '_' : c));
+}
+
+/// <summary>File helpers: extraction (zip built in, 7z/rar through 7-Zip), mod roots, copies and moves.</summary>
+public static class Files
+{
+	private const string SevenZip = @"C:\Program Files\7-Zip\7z.exe";
+
 	public static void Extract(string archive, string dest)
 	{
+		Directory.CreateDirectory(dest);
 		if (archive.EndsWith(".zip", StringComparison.OrdinalIgnoreCase))
 		{
 			ZipFile.ExtractToDirectory(archive, dest, true);
@@ -249,7 +485,11 @@ public static class Installer
 		}
 	}
 
-	/// <summary>Folders holding an Info.json, shallowest first; nothing below a mod folder counts as another mod.</summary>
+	/// <summary>
+	/// Folders holding an Info.json, at any depth (archives wrap mods in folders: LIRR GT-1's two mods sit two levels
+	/// down). The game reads only Mods' top folders, so each one becomes its own folder there; nothing below a mod
+	/// folder counts as another mod.
+	/// </summary>
 	public static List<string> FindRoots(string dir)
 	{
 		List<string> roots = [];
@@ -270,16 +510,7 @@ public static class Installer
 		return roots;
 	}
 
-	private static string CleanName(string archiveName) =>
-		System.Text.RegularExpressions.Regex.Replace(archiveName, @"[\s-]+v?\d+(\.\d+)*[a-z]?(\s*\(.*\))?$", "").Trim();
-
-	private static string SafeFolderName(string name, string fallback)
-	{
-		string s = string.Concat(name.Select(c => Path.GetInvalidFileNameChars().Contains(c) ? '_' : c)).Trim().TrimEnd('.');
-		return s.Length > 0 ? s : fallback;
-	}
-
-	private static void CopyDirectory(string from, string to)
+	public static void CopyDirectory(string from, string to)
 	{
 		Directory.CreateDirectory(to);
 		foreach (string dir in Directory.EnumerateDirectories(from, "*", SearchOption.AllDirectories))
@@ -292,7 +523,7 @@ public static class Installer
 		}
 	}
 
-	private static void MoveDirectory(string from, string to)
+	public static void MoveDirectory(string from, string to)
 	{
 		if (string.Equals(Path.GetPathRoot(Path.GetFullPath(from)), Path.GetPathRoot(Path.GetFullPath(to)), StringComparison.OrdinalIgnoreCase))
 		{
@@ -300,49 +531,19 @@ public static class Installer
 			return;
 		}
 		CopyDirectory(from, to);
-		DeleteDirectory(from);
+		TryDeleteDirectory(from);
 	}
 
-	private static void DeleteDirectory(string dir)
+	public static void TryDeleteDirectory(string dir)
 	{
+		if (!Directory.Exists(dir))
+		{
+			return;
+		}
 		foreach (string f in Directory.EnumerateFiles(dir, "*", SearchOption.AllDirectories))
 		{
 			File.SetAttributes(f, FileAttributes.Normal);
 		}
 		Directory.Delete(dir, true);
-	}
-}
-
-/// <summary>The zip archive: every installed archive is filed in the archive folder, keeping one per mod.</summary>
-public static class ModArchive
-{
-	public static string Store(Settings settings, StateStore state, string archive, IReadOnlyList<string> keys, string? name)
-	{
-		Directory.CreateDirectory(settings.ArchiveDir);
-		string fileName = name ?? Path.GetFileName(archive);
-		string dest = Path.Combine(settings.ArchiveDir, fileName);
-		// Another mod's archive with the same file name stays: this one gets a numbered name.
-		for (int n = 2; state.Mods.Any(kv => !keys.Contains(kv.Key, StringComparer.OrdinalIgnoreCase)
-			&& string.Equals(kv.Value.Archive, dest, StringComparison.OrdinalIgnoreCase)); n++)
-		{
-			dest = Path.Combine(settings.ArchiveDir, $"{Path.GetFileNameWithoutExtension(fileName)} ({n}){Path.GetExtension(fileName)}");
-		}
-		if (!string.Equals(Path.GetFullPath(archive), Path.GetFullPath(dest), StringComparison.OrdinalIgnoreCase))
-		{
-			File.Copy(archive, dest, true);
-		}
-		foreach (string key in keys)
-		{
-			ModRecord r = state.Get(key);
-			string? old = r.Archive;
-			r.Archive = dest;
-			if (old != null && !string.Equals(old, dest, StringComparison.OrdinalIgnoreCase)
-				&& !state.Mods.Values.Any(o => string.Equals(o.Archive, old, StringComparison.OrdinalIgnoreCase))
-				&& File.Exists(old))
-			{
-				File.Delete(old);
-			}
-		}
-		return dest;
 	}
 }
