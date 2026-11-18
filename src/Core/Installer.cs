@@ -56,6 +56,8 @@ public sealed class InstallPlan : IDisposable
 	/// <summary>The installed package this one updates (the one carrying the same mods), or null for a new package.</summary>
 	public PackageRecord? Package { get; set; }
 	public string Name { get; set; } = "";
+	/// <summary>Several mods, none named like the archive ("Freeman Test"): the package keeps the archive's name.</summary>
+	public bool NamedAfterArchive { get; set; }
 
 	public void Dispose()
 	{
@@ -99,7 +101,12 @@ public static class Installer
 			{
 				PlanOverlays(plan, installed);
 			}
+			string archiveName = CleanName(Path.GetFileNameWithoutExtension(source.TrimEnd('\\', '/')));
+			plan.NamedAfterArchive = plan.Mods.Count(p => p.Action != PlanAction.Blocked) > 1
+				&& !plan.Mods.Any(p => Scanner.Normalize(p.Manifest.Name) is { Length: >= 3 } mod && Scanner.Normalize(archiveName) is { Length: >= 3 } arc
+					&& (mod.Contains(arc) || arc.Contains(mod)));
 			plan.Name = plan.Package?.Name
+				?? (plan.NamedAfterArchive ? archiveName : null)
 				?? plan.Mods.Where(p => !p.Shared).Select(p => p.Manifest.Name).FirstOrDefault()
 				?? plan.Mods.Select(p => p.Manifest.Name).FirstOrDefault()
 				?? CleanName(Path.GetFileNameWithoutExtension(source.TrimEnd('\\', '/')));
@@ -139,6 +146,15 @@ public static class Installer
 		bool shared = state.WithMember(m.Key).Any(p => p != plan.Package
 			&& installed.Packages.Any(ip => ip.Record == p && ip.Members.Count > 0));
 		int c = Versions.Compare(m.Version, existing.Manifest.Version);
+		if (shared && c == 0 && NewerBuild(root, existing.Folder) is DateTime built)
+		{
+			// Test builds often keep their version (Freeman's 1.0.0 packs): newer files under the same version are an update.
+			return new PlannedMod
+			{
+				Manifest = m, Source = root, Target = target, Existing = existing, Shared = true, Action = PlanAction.Update,
+				Reason = $"same version, newer build ({built:yyyy-MM-dd HH:mm})",
+			};
+		}
 		if (shared && c <= 0)
 		{
 			return new PlannedMod
@@ -152,6 +168,31 @@ public static class Installer
 			Manifest = m, Source = root, Target = target, Existing = existing, Shared = shared,
 			Action = c > 0 ? PlanAction.Update : c < 0 ? PlanAction.Downgrade : PlanAction.Reinstall,
 		};
+	}
+
+	/// <summary>
+	/// When the source holds files that differ from (or are missing in) the installed folder and the newest of them is
+	/// newer than the installed copies they would replace, that file's time; otherwise null.
+	/// </summary>
+	public static DateTime? NewerBuild(string source, string installed)
+	{
+		DateTime newestSource = DateTime.MinValue, newestInstalled = DateTime.MinValue;
+		bool differs = false;
+		foreach (string f in Directory.EnumerateFiles(source, "*", SearchOption.AllDirectories))
+		{
+			FileInfo s = new(f), t = new(Path.Combine(installed, Path.GetRelativePath(source, f)));
+			if (t.Exists && t.Length == s.Length)
+			{
+				continue;
+			}
+			differs = true;
+			newestSource = s.LastWriteTime > newestSource ? s.LastWriteTime : newestSource;
+			if (t.Exists && t.LastWriteTime > newestInstalled)
+			{
+				newestInstalled = t.LastWriteTime;
+			}
+		}
+		return differs && newestSource > newestInstalled ? newestSource : null;
 	}
 
 	/// <summary>An archive without mods: top folders named like installed mods' folders (through wrapper folders) are add-ons.</summary>
@@ -227,7 +268,7 @@ public static class Installer
 		}
 		rec.Members = plan.Mods.Where(p => p.Action != PlanAction.Blocked).Select(p => p.Manifest.Key).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
 		rec.Overlays = plan.Overlays.ToDictionary(o => o.Target.Key, o => o.Files, StringComparer.OrdinalIgnoreCase);
-		rec.Name = rec.IsAddOn ? plan.Name : null;
+		rec.Name = rec.IsAddOn || plan.NamedAfterArchive ? plan.Name : null;
 		rec.Source = nexus != null ? "nxm" : plan.IsFolder ? "folder" : "zip";
 		rec.SourceName = nexus?.FileName ?? Path.GetFileName(plan.SourcePath.TrimEnd('\\', '/'));
 		rec.InstalledAt = DateTime.Now;

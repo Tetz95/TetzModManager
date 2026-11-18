@@ -178,10 +178,10 @@ public static class Scanner
 			.First();
 	}
 
-	private static string Normalize(string s) => new(s.ToLowerInvariant().Where(char.IsLetterOrDigit).ToArray());
+	internal static string Normalize(string s) => new(s.ToLowerInvariant().Where(char.IsLetterOrDigit).ToArray());
 
 	/// <summary>How well a mod's name matches the archive's: "GP40" in "Experimental Only GP40", "SCOLD LOAD ID" vs "SCOLD 1.0.8".</summary>
-	private static int Similarity(string name, string hint)
+	internal static int Similarity(string name, string hint)
 	{
 		if (name.Length == 0 || hint.Length == 0)
 		{

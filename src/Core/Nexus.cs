@@ -212,7 +212,9 @@ public static class Updates
 	{
 		NexusFile at = from;
 		HashSet<int> seen = [from.FileId];
-		while (files.Updates.TryGetValue(at.FileId, out int next) && seen.Add(next) && files.Files.FirstOrDefault(f => f.FileId == next) is NexusFile n)
+		// Authors sometimes link a file "updated" to an older one (RTM 6.2 -> 6.1): never step back to a lower version.
+		while (files.Updates.TryGetValue(at.FileId, out int next) && seen.Add(next) && files.Files.FirstOrDefault(f => f.FileId == next) is NexusFile n
+			&& Versions.Compare(n.Version, at.Version) >= 0)
 		{
 			at = n;
 		}

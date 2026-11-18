@@ -80,7 +80,10 @@ public static partial class VortexImport
 			rec.SourceName = d.Name;
 			rec.NexusModId = d.ModId;
 			rec.LinkSource = d.ModId != null ? "vortex" : null;
-			bool matches = d.Mods.Where(m => byKey.ContainsKey(m.Key)).All(m => Versions.Same(m.Version, byKey[m.Key].Manifest.Version));
+			// Only the core mods count: a bundled library (BMAN's GP38Scripts) may have been updated by another pack since.
+			HashSet<string> core = StateStore.Core(d.Mods);
+			bool matches = d.Mods.Where(m => byKey.ContainsKey(m.Key) && core.Contains(m.Key)).All(m => Versions.Same(m.Version, byKey[m.Key].Manifest.Version))
+				&& d.Mods.Where(m => byKey.ContainsKey(m.Key)).All(m => Versions.Compare(byKey[m.Key].Manifest.Version, m.Version) >= 0);
 			rec.InstalledNexusVersion = matches ? d.NexusVersion : null;
 			rec.NexusFileId = null;
 			string label = rec.IsAddOn ? $"add-on {d.Name} for {string.Join(", ", d.Overlays.Keys)}" : string.Join(", ", members.Select(k => byKey[k].Manifest.Name));
