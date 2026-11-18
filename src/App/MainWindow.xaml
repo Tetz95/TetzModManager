@@ -1,0 +1,116 @@
+<Window x:Class="TetzModManager.App.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Tetz's Mod Manager" Width="1400" Height="900" MinWidth="900" MinHeight="500"
+        AllowDrop="True" Drop="OnDrop" DragOver="OnDragOver" Loaded="OnLoaded">
+  <DockPanel>
+    <ToolBarTray DockPanel.Dock="Top">
+      <ToolBar>
+        <Button Content="Refresh" Click="OnRefresh" ToolTip="Read the Mods folder and Preferences.json again" />
+        <Button Content="Install archive..." Click="OnInstallArchive" ToolTip="Install a mod from a zip (or 7z/rar). Dropping archives on the window does the same." />
+        <Separator />
+        <Button Content="Check for updates" Click="OnCheckUpdates" ToolTip="Ask Nexus for the newest file of every linked mod" />
+        <Button x:Name="UpdateAllButton" Content="Update all" Click="OnUpdateAll" IsEnabled="False" />
+        <Separator />
+        <Button Content="Link from Vortex downloads" Click="OnVortexImport" ToolTip="Match installed mods to their Nexus pages from Vortex's download folder" />
+        <Separator />
+        <Button Content="Mods folder" Click="OnOpenMods" />
+        <Button Content="Archive folder" Click="OnOpenArchive" />
+        <Button Content="Settings..." Click="OnSettings" />
+      </ToolBar>
+    </ToolBarTray>
+    <StatusBar DockPanel.Dock="Bottom">
+      <StatusBarItem>
+        <TextBlock x:Name="GameStatus" />
+      </StatusBarItem>
+      <Separator />
+      <StatusBarItem>
+        <TextBlock x:Name="Counts" />
+      </StatusBarItem>
+      <StatusBarItem HorizontalAlignment="Right">
+        <ProgressBar x:Name="Progress" Width="200" Height="14" Visibility="Collapsed" />
+      </StatusBarItem>
+    </StatusBar>
+    <Grid Margin="6">
+      <Grid.RowDefinitions>
+        <RowDefinition Height="Auto" />
+        <RowDefinition Height="*" />
+        <RowDefinition Height="5" />
+        <RowDefinition Height="260" />
+      </Grid.RowDefinitions>
+      <StackPanel Orientation="Horizontal" Margin="0,0,0,6">
+        <TextBlock Text="Find:" VerticalAlignment="Center" Margin="0,0,6,0" />
+        <TextBox x:Name="FilterBox" Width="260" TextChanged="OnFilterChanged" />
+        <ComboBox x:Name="ViewBox" Width="220" Margin="10,0,0,0" SelectionChanged="OnFilterChanged">
+          <ComboBoxItem Content="All mods" IsSelected="True" />
+          <ComboBoxItem Content="Updates available" />
+          <ComboBoxItem Content="With notes" />
+          <ComboBoxItem Content="Duplicates" />
+          <ComboBoxItem Content="Disabled" />
+          <ComboBoxItem Content="Not linked to Nexus" />
+          <ComboBoxItem Content="Deployed by Vortex" />
+        </ComboBox>
+      </StackPanel>
+      <DataGrid x:Name="Grid" Grid.Row="1" AutoGenerateColumns="False" IsReadOnly="True" SelectionMode="Extended"
+                CanUserAddRows="False" HeadersVisibility="Column" GridLinesVisibility="Horizontal"
+                HorizontalGridLinesBrush="#DDD" SelectionChanged="OnSelectionChanged" EnableRowVirtualization="True">
+        <DataGrid.RowStyle>
+          <Style TargetType="DataGridRow">
+            <Style.Triggers>
+              <DataTrigger Binding="{Binding HasWarning}" Value="True">
+                <Setter Property="Background" Value="#FFF4E0" />
+              </DataTrigger>
+              <DataTrigger Binding="{Binding UpdateAvailable}" Value="True">
+                <Setter Property="Background" Value="#E6F2FF" />
+              </DataTrigger>
+              <DataTrigger Binding="{Binding IsDisabled}" Value="True">
+                <Setter Property="Foreground" Value="#888" />
+              </DataTrigger>
+            </Style.Triggers>
+          </Style>
+        </DataGrid.RowStyle>
+        <DataGrid.Columns>
+          <DataGridTemplateColumn Header="On" SortMemberPath="EnabledSort" Width="38">
+            <DataGridTemplateColumn.CellTemplate>
+              <DataTemplate>
+                <CheckBox IsChecked="{Binding Enabled, Mode=OneWay}" IsEnabled="{Binding CanToggle}" HorizontalAlignment="Center"
+                          Click="OnToggleEnabled" ToolTip="{Binding EnabledTip}" />
+              </DataTemplate>
+            </DataGridTemplateColumn.CellTemplate>
+          </DataGridTemplateColumn>
+          <DataGridTextColumn Header="Name" Binding="{Binding Name}" Width="260" />
+          <DataGridTextColumn Header="Version" Binding="{Binding Version}" Width="90" />
+          <DataGridTextColumn Header="Newest" Binding="{Binding Latest}" Width="80" />
+          <DataGridTextColumn Header="Author" Binding="{Binding Author}" Width="130" />
+          <DataGridTextColumn Header="Identifier" Binding="{Binding Key}" Width="230" />
+          <DataGridTextColumn Header="Nexus" Binding="{Binding NexusId}" Width="55" />
+          <DataGridTextColumn Header="Notes" Binding="{Binding NotesText}" Width="*" />
+        </DataGrid.Columns>
+      </DataGrid>
+      <GridSplitter Grid.Row="2" HorizontalAlignment="Stretch" Background="#EEE" />
+      <Grid Grid.Row="3">
+        <Grid.ColumnDefinitions>
+          <ColumnDefinition Width="*" />
+          <ColumnDefinition Width="5" />
+          <ColumnDefinition Width="*" />
+        </Grid.ColumnDefinitions>
+        <DockPanel Margin="0,4,6,0">
+          <WrapPanel DockPanel.Dock="Bottom" Margin="0,6,0,0">
+            <Button x:Name="UpdateButton" Content="Update" Click="OnUpdateSelected" />
+            <Button x:Name="NexusButton" Content="Nexus page" Click="OnNexusPage" />
+            <Button x:Name="LinkButton" Content="Link to Nexus..." Click="OnLink" />
+            <Button x:Name="FolderButton" Content="Open folder" Click="OnOpenFolder" />
+            <Button x:Name="RollBackButton" Content="Roll back" Click="OnRollBack" />
+            <Button x:Name="UninstallButton" Content="Uninstall" Click="OnUninstall" />
+          </WrapPanel>
+          <ScrollViewer VerticalScrollBarVisibility="Auto">
+            <TextBox x:Name="Details" IsReadOnly="True" TextWrapping="Wrap" BorderThickness="0" Background="Transparent" />
+          </ScrollViewer>
+        </DockPanel>
+        <GridSplitter Grid.Column="1" HorizontalAlignment="Stretch" Background="#EEE" />
+        <TextBox x:Name="LogBox" Grid.Column="2" Margin="6,4,0,0" IsReadOnly="True" TextWrapping="Wrap"
+                 VerticalScrollBarVisibility="Auto" FontFamily="Consolas" FontSize="12" />
+      </Grid>
+    </Grid>
+  </DockPanel>
+</Window>

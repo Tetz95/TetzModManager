@@ -1,0 +1,9 @@
+<Project>
+  <!-- Stops the Railroader mods' Directory.Build.props (one folder up) from applying: this isn't a game mod. -->
+  <PropertyGroup>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <Version>0.1.0</Version>
+  </PropertyGroup>
+</Project>
