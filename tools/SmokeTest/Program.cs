@@ -144,5 +144,16 @@ foreach (string d in new[] { Path.Combine(ro, "Assets", "Inner"), Path.Combine(r
 Files.TryDeleteDirectory(ro);
 Check(!Directory.Exists(ro), "a folder tree with read-only folders is deleted");
 
+// A Nexus file with the same Info.json version but older files than an installed test build is an older build.
+string buildA = Path.Combine(data, "build-installed"), buildB = Path.Combine(data, "build-nexus");
+Directory.CreateDirectory(buildA);
+Directory.CreateDirectory(buildB);
+File.WriteAllText(Path.Combine(buildA, "a.dll"), "newer test build");
+File.WriteAllText(Path.Combine(buildB, "a.dll"), "old");
+File.SetLastWriteTime(Path.Combine(buildB, "a.dll"), DateTime.Now.AddDays(-30));
+Check(Installer.OlderBuild(buildB, buildA) != null && Installer.NewerBuild(buildB, buildA) == null, "same version with older files is an older build");
+File.SetLastWriteTime(Path.Combine(buildB, "a.dll"), new DateTime(1980, 1, 1));
+Check(Installer.OlderBuild(buildB, buildA) == null, "files without times (1980) don't count as older");
+
 Console.WriteLine(failures == 0 ? "ALL PASSED" : $"{failures} FAILED");
 return failures;

@@ -14,7 +14,7 @@ public sealed class PackageRow(InstalledPackage p)
 	public string Name => Package.Name;
 	public string Version => Package.Record?.IsAddOn == true ? Package.Record.InstalledNexusVersion ?? ""
 		: !Versions.Same(Package.InstalledVersion, Package.Version) ? $"{Package.Version} ({Package.InstalledVersion})" : Package.Version;
-	public string Latest => Package.Record?.LatestVersion ?? "";
+	public string Latest => Package.Record?.LatestVersion is string v ? (Package.Record.NewerThanNexus ? v + " (installed is newer)" : v) : "";
 	public string Author => Package.Author;
 	public string Contents => Package.Record?.IsAddOn == true ? "add-on for " + string.Join(", ", Package.Record.Overlays.Keys)
 		: Package.Members.Count == 1 ? Package.Members[0].Manifest.Identifier ?? Package.Members[0].Key
@@ -597,9 +597,10 @@ public partial class MainWindow : Window
 		}
 		await Run("Update", async () =>
 		{
-			foreach (PackageRow r in rows)
+			// Packages updated by the same Nexus file (one pack installed as separate packages): download it once.
+			foreach ((int mod, int file) in rows.Select(r => (r.Package.Record!.NexusModId!.Value, r.Package.Record.LatestFileId!.Value)).Distinct())
 			{
-				await DownloadAndInstall(nexus, r.Package.Record!.NexusModId!.Value, r.Package.Record.LatestFileId!.Value, null, null);
+				await DownloadAndInstall(nexus, mod, file, null, null);
 			}
 		});
 	}

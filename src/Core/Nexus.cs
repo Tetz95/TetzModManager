@@ -145,6 +145,9 @@ public sealed class NexusClient : IDisposable
 /// <summary>Update checks: follows Nexus's file update chain from the installed file to the newest one.</summary>
 public static class Updates
 {
+	/// <summary>Zip times carry no time zone: a build is "newer" only by more than this.</summary>
+	private static readonly TimeSpan LocalBuildSlack = TimeSpan.FromDays(1);
+
 	public static async Task<int> Check(NexusClient nexus, StateStore state, IReadOnlyList<InstalledPackage> packages, Action<string> log, CancellationToken ct = default)
 	{
 		int found = 0;
@@ -164,6 +167,8 @@ public static class Updates
 			foreach (InstalledPackage p in g)
 			{
 				PackageRecord r = p.Record!;
+				// Which Nexus file is installed is only guessed (from the version) for manual links and local installs.
+				bool guessed = r.NexusFileId == null || r.LinkSource == "manual";
 				// The Nexus version known from the install (or Vortex's download) first: authors often leave Info.json at 1.0.0.
 				NexusFile? current = (r.InstalledNexusVersion != null ? Resolve(files, r, r.InstalledNexusVersion) : null) ?? Resolve(files, r, p.Version);
 				if (current != null)
@@ -174,6 +179,11 @@ public static class Updates
 					NexusFile latest = Latest(files, current);
 					r.LatestFileId = latest.FileId;
 					r.LatestVersion = latest.Version;
+					// Authors renumber (1.3, then 1 for a new game version): an update is a later upload, whatever its number.
+					// A re-upload under the same version isn't offered.
+					r.LatestIsNewer = latest.FileId == current.FileId || Versions.Same(latest.Version, current.Version) ? false
+						: latest.Uploaded > 0 && current.Uploaded > 0 ? latest.Uploaded > current.Uploaded
+						: null;
 				}
 				else
 				{
@@ -181,6 +191,18 @@ public static class Updates
 					NexusFile? main = files.Files.Where(f => f.Category == "MAIN").OrderByDescending(f => f.Primary).ThenByDescending(f => f.Uploaded).FirstOrDefault();
 					r.LatestFileId = main?.FileId;
 					r.LatestVersion = main?.Version;
+					r.LatestIsNewer = null;
+				}
+				// A local or test build (Freeman's test packs keep 1.0.0, which can equal an old Nexus file's version): files
+				// newer than the page's newest file mean it isn't that file, and Nexus has nothing newer.
+				r.NewerThanNexus = false;
+				if (guessed && r.LatestFileId is int lid && lid != r.NexusFileId && files.Files.FirstOrDefault(f => f.FileId == lid) is NexusFile lf && lf.Uploaded > 0
+					&& p.NewestFile() is DateTime built && built > DateTimeOffset.FromUnixTimeSeconds(lf.Uploaded).UtcDateTime + LocalBuildSlack)
+				{
+					r.NewerThanNexus = true;
+					r.NexusFileId = null;
+					r.InstalledNexusVersion = null;
+					log($"{p.Name}: the installed files ({built.ToLocalTime():yyyy-MM-dd HH:mm}) are newer than Nexus's {lf.Version}: a local build, not updated");
 				}
 				r.CheckedAt = DateTime.Now;
 				if (p.UpdateAvailable)
@@ -212,9 +234,10 @@ public static class Updates
 	{
 		NexusFile at = from;
 		HashSet<int> seen = [from.FileId];
-		// Authors sometimes link a file "updated" to an older one (RTM 6.2 -> 6.1): never step back to a lower version.
+		// Authors sometimes link a file "updated" to an older one (RTM 6.2 -> 6.1): never step back to an earlier upload.
+		// Upload times, not version numbers, since authors renumber (1.3 -> 1); the version only when a time is missing.
 		while (files.Updates.TryGetValue(at.FileId, out int next) && seen.Add(next) && files.Files.FirstOrDefault(f => f.FileId == next) is NexusFile n
-			&& Versions.Compare(n.Version, at.Version) >= 0)
+			&& (n.Uploaded > 0 && at.Uploaded > 0 ? n.Uploaded >= at.Uploaded : Versions.Compare(n.Version, at.Version) >= 0))
 		{
 			at = n;
 		}

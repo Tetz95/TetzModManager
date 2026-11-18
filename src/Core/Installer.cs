@@ -176,6 +176,16 @@ public static class Installer
 				Reason = $"same version, newer build ({built:yyyy-MM-dd HH:mm})",
 			};
 		}
+		if (c == 0 && OlderBuild(root, existing.Folder) is DateTime installedBuild)
+		{
+			// The same version number with older files (a Nexus file over a newer test build): ask first.
+			return new PlannedMod
+			{
+				Manifest = m, Source = root, Target = target, Existing = existing, Shared = shared,
+				Action = shared ? PlanAction.KeepInstalled : PlanAction.Downgrade,
+				Reason = $"same version, but the installed files are newer ({installedBuild:yyyy-MM-dd HH:mm})",
+			};
+		}
 		if (shared && c <= 0)
 		{
 			return new PlannedMod
@@ -214,6 +224,27 @@ public static class Installer
 			}
 		}
 		return differs && newestSource > newestInstalled ? newestSource : null;
+	}
+
+	/// <summary>
+	/// When the files that differ are newer in the installed folder than in the source (by more than a day: zip times carry
+	/// no time zone), the installed folder's newest such file time; otherwise null.
+	/// </summary>
+	public static DateTime? OlderBuild(string source, string installed)
+	{
+		DateTime newestSource = DateTime.MinValue, newestInstalled = DateTime.MinValue;
+		foreach (string f in Directory.EnumerateFiles(source, "*", SearchOption.AllDirectories))
+		{
+			FileInfo s = new(f), t = new(Path.Combine(installed, Path.GetRelativePath(source, f)));
+			if (!t.Exists || t.Length == s.Length)
+			{
+				continue;
+			}
+			newestSource = s.LastWriteTime > newestSource ? s.LastWriteTime : newestSource;
+			newestInstalled = t.LastWriteTime > newestInstalled ? t.LastWriteTime : newestInstalled;
+		}
+		// Archives saved without times (1980-01-01, the zip epoch) say nothing.
+		return newestSource.Year > 1980 && newestInstalled > newestSource + TimeSpan.FromDays(1) ? newestInstalled : null;
 	}
 
 	/// <summary>An archive without mods: top folders named like installed mods' folders (through wrapper folders) are add-ons.</summary>
@@ -293,6 +324,8 @@ public static class Installer
 		rec.Source = nexus != null ? "nxm" : plan.IsFolder ? "folder" : "zip";
 		rec.SourceName = nexus?.FileName ?? Path.GetFileName(plan.SourcePath.TrimEnd('\\', '/'));
 		rec.InstalledAt = DateTime.Now;
+		rec.LatestIsNewer = null;
+		rec.NewerThanNexus = false;
 		if (nexus != null)
 		{
 			rec.NexusModId = nexus.ModId;
@@ -304,6 +337,21 @@ public static class Installer
 			{
 				rec.LatestVersion = nexus.FileVersion;
 				rec.LatestFileId = nexus.FileId;
+			}
+			// Other packages whose mods this file also carried (a pack installed earlier as separate packages) are now
+			// at this file too, or they'd offer the same download again.
+			foreach (PackageRecord other in state.Packages.Where(p => p != rec && p.NexusModId == nexus.ModId && p.Members.Count > 0
+				&& p.Members.All(k => rec.Members.Contains(k, StringComparer.OrdinalIgnoreCase))))
+			{
+				other.NexusFileId = nexus.FileId;
+				other.InstalledNexusVersion = nexus.FileVersion;
+				other.LatestIsNewer = null;
+				other.NewerThanNexus = false;
+				if (other.LatestFileId == nexus.FileId || other.LatestVersion == null)
+				{
+					other.LatestFileId = nexus.FileId;
+					other.LatestVersion = nexus.FileVersion;
+				}
 			}
 		}
 		else

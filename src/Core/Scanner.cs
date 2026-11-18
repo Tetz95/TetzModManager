@@ -42,8 +42,35 @@ public sealed class InstalledPackage
 
 	public bool UpdateAvailable =>
 		Record?.LatestVersion is string latest
+		&& !Record.NewerThanNexus
 		&& !(Record.LatestFileId != null && Record.LatestFileId == Record.NexusFileId)
-		&& Versions.Compare(latest, InstalledVersion) > 0;
+		&& (Record.LatestIsNewer ?? Versions.Compare(latest, InstalledVersion) > 0);
+
+	/// <summary>The newest file time (UTC) in the package's own mod folders (all members when it has none of its own).</summary>
+	public DateTime? NewestFile()
+	{
+		DateTime? newest = null;
+		foreach (InstalledMod m in Own.Any() ? Own : Members)
+		{
+			if (!Directory.Exists(m.Folder))
+			{
+				continue;
+			}
+			foreach (string f in Directory.EnumerateFiles(m.Folder, "*", SearchOption.AllDirectories))
+			{
+				if (Path.GetFileNameWithoutExtension(f).EndsWith(')') && System.Text.RegularExpressions.Regex.IsMatch(Path.GetFileNameWithoutExtension(f), @" ?\(\d+\)$"))
+				{
+					continue; // a restore's or sync's duplicate ("Info(1).json"), not part of the build
+				}
+				DateTime t = File.GetLastWriteTimeUtc(f);
+				if (newest == null || t > newest)
+				{
+					newest = t;
+				}
+			}
+		}
+		return newest;
+	}
 
 	/// <summary>Members the package controls on its own (not bundled libraries others share).</summary>
 	public IEnumerable<InstalledMod> Own => Members.Where(m => !Shared.Contains(m.Key));

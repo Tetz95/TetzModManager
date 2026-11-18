@@ -36,6 +36,10 @@ public sealed class PackageRecord
 	public string? LatestVersion { get; set; }
 	public int? LatestFileId { get; set; }
 	public DateTime? CheckedAt { get; set; }
+	/// <summary>The installed files are newer than the page's newest file (a local or test build): no update offered.</summary>
+	public bool NewerThanNexus { get; set; }
+	/// <summary>Whether the latest file was uploaded after the installed one (null: unknown, versions decide).</summary>
+	public bool? LatestIsNewer { get; set; }
 
 	public bool IsAddOn => Members.Count == 0 && Overlays.Count > 0;
 }
