@@ -77,3 +77,7 @@ TETZMM_DATA=<scratch> dotnet run --project tools/SmokeTest -- "<home>" "<Vortex 
 
 `TETZMM_DATA` moves all of the tool's own files (settings, state, rollback copies, work folder) for tests;
 `TETZMM_SNAPSHOT=<png>` (with `TETZMM_SELECT=<name>`) renders the window to a file and closes it.
+
+## Licence
+
+MIT, see [LICENSE](LICENSE).
