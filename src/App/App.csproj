@@ -6,7 +6,11 @@
     <AssemblyName>TetzModManager</AssemblyName>
     <RootNamespace>TetzModManager.App</RootNamespace>
     <Product>Tetz's Mod Manager</Product>
+    <ApplicationIcon>app.ico</ApplicationIcon>
   </PropertyGroup>
+  <ItemGroup>
+    <Resource Include="app.ico" />
+  </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\Core\Core.csproj" />
   </ItemGroup>

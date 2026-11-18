@@ -13,6 +13,7 @@ public static class InputDialog
 		{
 			Title = title,
 			Owner = owner,
+			Icon = owner.Icon,
 			Width = 460,
 			SizeToContent = SizeToContent.Height,
 			ResizeMode = ResizeMode.NoResize,
@@ -46,6 +47,7 @@ public sealed class SettingsWindow : Window
 	{
 		_settings = settings;
 		Title = "Settings";
+		Icon = Application.Current?.MainWindow?.Icon;
 		Width = 720;
 		SizeToContent = SizeToContent.Height;
 		ResizeMode = ResizeMode.NoResize;
