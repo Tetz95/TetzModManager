@@ -38,8 +38,8 @@ home folder, keeps Preferences.json in step, checks Nexus for updates and keeps 
 dotnet build TetzModManager.sln
 # smoke test: reads the real home folder, installs into a throwaway one
 TETZMM_DATA=<scratch> dotnet run --project tools/SmokeTest -- "<home>" "<zip of an installed mod>" "<older zip of it>" [key file]
-# install to %LOCALAPPDATA%\Programs\Tetz's Mod Manager (close it first)
-dotnet publish src/App/App.csproj -c Release -o "$LOCALAPPDATA/Programs/Tetz's Mod Manager"
+# install to %LOCALAPPDATA%\Programs\TetzModManager (close it first; publish fails on a folder name with an apostrophe)
+dotnet publish src/App/App.csproj -c Release -o "$LOCALAPPDATA/Programs/TetzModManager"
 ```
 
 `TETZMM_DATA` moves all of the tool's own files (settings, state, rollback copies, work folder) for tests;
