@@ -60,11 +60,12 @@ handler that was there before, and "Give Nexus links back" restores it).
 - **Right-click menus**: on a package, Update, Enable/Disable (several packages at once), Open folder, Show archive
   in Explorer, Nexus page, Link to Nexus, Copy name/identifiers, Roll back and Uninstall; on a mod in the details
   pane, Enable/Disable, Open folder and Copy identifier.
+- **Windows remember** their size and position (and the main window its splitters) between runs.
 - **Notes** flag the same mod in two folders, a mod not in Preferences.json while nothing enabled needs it, a
   Preferences.json version differing from the folder's, a missing or disabled required mod, an enabled incompatible mod,
   a game-version pin, and a package member missing from Mods.
 
-Its own files: `%APPDATA%\TetzModManager` (settings, package list, Preferences.json backups) and
+Its own files: `%APPDATA%\TetzModManager` (settings, package list, Preferences.json backups, window places) and
 `%LOCALAPPDATA%\TetzModManager` (rollback copies, work folder).
 
 ## Build

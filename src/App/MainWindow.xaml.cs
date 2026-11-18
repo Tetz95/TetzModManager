@@ -73,8 +73,35 @@ public partial class MainWindow : Window
 	public MainWindow()
 	{
 		InitializeComponent();
+		RememberPlace();
 		_gameTimer.Tick += (_, _) => ShowGameStatus();
 		_gameTimer.Start();
+	}
+
+	/// <summary>The window's size, position and splitters as they were when it last closed.</summary>
+	private void RememberPlace()
+	{
+		if (WindowPlaces.Get("main") is { } p)
+		{
+			if (p.Extra.TryGetValue("detailsHeight", out double h) && h >= 120)
+			{
+				DetailsRow.Height = new GridLength(h);
+			}
+			if (p.Extra.TryGetValue("detailsShare", out double share) && share is > 0.1 and < 0.9)
+			{
+				DetailsColumn.Width = new GridLength(share, GridUnitType.Star);
+				LogColumn.Width = new GridLength(1 - share, GridUnitType.Star);
+			}
+		}
+		WindowPlaces.Track(this, "main", saveExtra: place =>
+		{
+			place.Extra["detailsHeight"] = DetailsRow.ActualHeight;
+			double total = DetailsColumn.ActualWidth + LogColumn.ActualWidth;
+			if (total > 0)
+			{
+				place.Extra["detailsShare"] = DetailsColumn.ActualWidth / total;
+			}
+		});
 	}
 
 	private void OnLoaded(object sender, RoutedEventArgs e)

@@ -135,6 +135,7 @@ public sealed class SettingsWindow : Window
 		root.Children.Add(nxm);
 		root.Children.Add(buttons);
 		Content = root;
+		WindowPlaces.Track(this, "settings", size: false);
 	}
 
 	private void Save()
