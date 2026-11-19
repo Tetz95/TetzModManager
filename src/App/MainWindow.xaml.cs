@@ -306,16 +306,53 @@ public partial class MainWindow : Window
 
 	// ---- running work off the UI thread ----
 
-	private async Task Run(string what, Func<Task> work)
+	// Jobs asked for while another runs (an nxm link or archive handed over during the update check): run in turn.
+	private readonly Queue<(string What, Func<Task> Work, bool NeedsGameClosed, TaskCompletionSource Done)> _queue = new();
+
+	/// <summary>
+	/// Runs one job at a time. A job asked for while another runs waits its turn; the returned task finishes when the
+	/// job has run (or was skipped), so callers' resources (a Nexus client) stay alive until then.
+	/// </summary>
+	private async Task Run(string what, Func<Task> work, bool needsGameClosed = true)
 	{
 		if (_busy)
 		{
-			Log($"Busy: {what} not started. Try again once the current job has finished.");
+			TaskCompletionSource done = new(TaskCreationOptions.RunContinuationsAsynchronously);
+			_queue.Enqueue((what, work, needsGameClosed, done));
+			Log($"Queued: {what} starts once the current job has finished.");
+			await done.Task;
 			return;
 		}
 		_busy = true;
 		Progress.Visibility = Visibility.Visible;
 		Progress.IsIndeterminate = true;
+		try
+		{
+			await Execute(what, work);
+			while (_queue.TryDequeue(out var next))
+			{
+				// The game may have been started while the job waited.
+				if (next.NeedsGameClosed && Game.IsRunning(_settings))
+				{
+					Log($"Queued {next.What} not started: Railroader is running. Try again once the game is closed.");
+				}
+				else
+				{
+					Log($"Starting queued {next.What}.");
+					await Execute(next.What, next.Work);
+				}
+				next.Done.SetResult();
+			}
+		}
+		finally
+		{
+			_busy = false;
+			Progress.Visibility = Visibility.Collapsed;
+		}
+	}
+
+	private async Task Execute(string what, Func<Task> work)
+	{
 		try
 		{
 			await work();
@@ -327,8 +364,6 @@ public partial class MainWindow : Window
 		}
 		finally
 		{
-			_busy = false;
-			Progress.Visibility = Visibility.Collapsed;
 			_state = StateStore.Load();
 			Refresh();
 		}
@@ -607,7 +642,7 @@ public partial class MainWindow : Window
 			Log($"Checking {_scan.Packages.Count(p => p.Record?.NexusModId != null)} linked packages on Nexus...");
 			int n = await Updates.Check(nexus, _state, _scan.Packages, Log);
 			Log(n == 0 ? "Everything is up to date." : $"{n} updates.");
-		});
+		}, needsGameClosed: false);
 	}
 
 	private async Task UpdateRows(List<PackageRow> rows)
