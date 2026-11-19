@@ -505,6 +505,21 @@ public partial class MainWindow : Window
 		}
 	}
 
+	/// <summary>The Nexus page's name, which names a package of several mods; null when Nexus doesn't answer.</summary>
+	private async Task<string?> PageName(NexusClient nexus, int modId)
+	{
+		try
+		{
+			string name = (await nexus.Mod(modId)).Name.Trim();
+			return name.Length > 0 ? name : null;
+		}
+		catch (Exception e)
+		{
+			Log($"Nexus page name for {modId}: {e.Message}");
+			return null;
+		}
+	}
+
 	private async Task DownloadAndInstall(NexusClient nexus, int modId, int fileId, string? key, string? expires)
 	{
 		NexusFile file = await nexus.File(modId, fileId);
@@ -516,7 +531,7 @@ public partial class MainWindow : Window
 		Progress.IsIndeterminate = true;
 		try
 		{
-			await Install(dest, new NexusSource(modId, fileId, file.FileName, file.Version, file.Name));
+			await Install(dest, new NexusSource(modId, fileId, file.FileName, file.Version, await PageName(nexus, modId) ?? Installer.CleanName(file.Name)));
 		}
 		finally
 		{

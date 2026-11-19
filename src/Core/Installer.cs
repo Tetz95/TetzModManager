@@ -58,7 +58,7 @@ public sealed class InstallPlan : IDisposable
 	public string Name { get; set; } = "";
 	/// <summary>Several mods, none named like the archive ("Freeman Test"): the package keeps the archive's name.</summary>
 	public bool NamedAfterArchive { get; set; }
-	/// <summary>The archive's name without its version or Nexus download suffix (the Nexus file name for downloads).</summary>
+	/// <summary>The archive's name without its version or Nexus download suffix; the Nexus page name for downloads.</summary>
 	public string ArchiveName { get; set; } = "";
 
 	public void Dispose()
@@ -103,7 +103,7 @@ public static class Installer
 			{
 				PlanOverlays(plan, installed);
 			}
-			string archiveName = CleanName(displayName ?? Path.GetFileNameWithoutExtension(source.TrimEnd('\\', '/')));
+			string archiveName = displayName ?? CleanName(Path.GetFileNameWithoutExtension(source.TrimEnd('\\', '/')));
 			plan.ArchiveName = archiveName;
 			plan.NamedAfterArchive = plan.Mods.Count(p => p.Action != PlanAction.Blocked) > 1
 				&& !plan.Mods.Any(p => Scanner.Normalize(p.Manifest.Name) is { Length: >= 3 } mod && Scanner.Normalize(archiveName) is { Length: >= 3 } arc
