@@ -381,6 +381,12 @@ public partial class MainWindow : Window
 		{
 			List<string> lines = [];
 			bool ask = plan.Overlays.Count > 0;
+			if (plan.Mods.Count > 0 && plan.Mods.All(m => m.Manifest.Umm))
+			{
+				// A Legacy file (Unity Mod Manager), e.g. an author's Legacy update on a page linked to a 0.6 conversion.
+				lines.Add("Only Legacy (Unity Mod Manager) mods: Railroader 0.6 doesn't load them.");
+				ask = true;
+			}
 			foreach (PlannedMod p in plan.Mods)
 			{
 				lines.Add(Describe(p));
