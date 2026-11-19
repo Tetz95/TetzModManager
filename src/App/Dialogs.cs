@@ -40,7 +40,8 @@ public static class InputDialog
 public sealed class SettingsWindow : Window
 {
 	private readonly Settings _settings;
-	private readonly TextBox _home, _archive, _key, _vortex;
+	private readonly TextBox _home, _archive, _key, _vortex, _edits, _hours;
+	private readonly CheckBox _autoCheck, _managerCheck;
 	private readonly TextBlock _nxmStatus = new() { TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 4, 0, 6) };
 
 	public SettingsWindow(Settings settings)
@@ -98,6 +99,21 @@ public sealed class SettingsWindow : Window
 		_archive = Field("Archive folder", settings.ArchiveDir, false, "Every installed archive is kept here, the newest one per mod.");
 		_key = Field("Nexus API key file", settings.NexusKeyFile, true, "A text file with your personal API key (nexusmods.com > Site preferences > API keys). Sent only to api.nexusmods.com.");
 		_vortex = Field("Vortex downloads", settings.VortexDownloadsDir, false, "Vortex's Railroader download folder: used once to link installed mods to their Nexus pages.");
+		_edits = Field("Local edits folder", settings.LocalEditsDir, false,
+			"Optional: your own edits to other authors' mods, one folder per mod named like its folder in Mods. Those mods get a note, and updating them asks first.");
+
+		_autoCheck = new CheckBox { Content = "Check Nexus for mod updates when the manager opens, and while it's open every", IsChecked = settings.AutoCheckUpdates, VerticalAlignment = VerticalAlignment.Center };
+		_hours = new TextBox { Text = settings.CheckUpdatesEveryHours.ToString(), Width = 36, Margin = new Thickness(6, 0, 6, 0) };
+		StackPanel auto = new() { Orientation = Orientation.Horizontal };
+		auto.Children.Add(_autoCheck);
+		auto.Children.Add(_hours);
+		auto.Children.Add(new TextBlock { Text = "hours", VerticalAlignment = VerticalAlignment.Center });
+		_managerCheck = new CheckBox { Content = "Look for a new version of Tetz's Mod Manager when it opens (GitHub)", IsChecked = settings.CheckManagerUpdates, Margin = new Thickness(0, 6, 0, 0) };
+		StackPanel updates = new() { Margin = new Thickness(0, 14, 0, 0) };
+		updates.Children.Add(new TextBlock { Text = "Updates", FontWeight = FontWeights.SemiBold, Margin = new Thickness(0, 0, 0, 4) });
+		updates.Children.Add(auto);
+		updates.Children.Add(_managerCheck);
+		updates.Children.Add(new TextBlock { Text = "Nothing installs by itself: updates wait for Update or Update all. Check for updates also looks for a new manager.", Foreground = System.Windows.Media.Brushes.Gray, TextWrapping = TextWrapping.Wrap, FontSize = 11, Margin = new Thickness(0, 4, 0, 0) });
 
 		Button take = new() { Content = "Handle Nexus links here" };
 		Button back = new() { Content = "Give Nexus links back" };
@@ -132,6 +148,7 @@ public sealed class SettingsWindow : Window
 
 		StackPanel root = new() { Margin = new Thickness(12) };
 		root.Children.Add(grid);
+		root.Children.Add(updates);
 		root.Children.Add(nxm);
 		root.Children.Add(buttons);
 		Content = root;
@@ -144,6 +161,10 @@ public sealed class SettingsWindow : Window
 		_settings.ArchiveDir = _archive.Text.Trim();
 		_settings.NexusKeyFile = _key.Text.Trim();
 		_settings.VortexDownloadsDir = _vortex.Text.Trim();
+		_settings.LocalEditsDir = _edits.Text.Trim();
+		_settings.AutoCheckUpdates = _autoCheck.IsChecked == true;
+		_settings.CheckUpdatesEveryHours = int.TryParse(_hours.Text.Trim(), out int h) && h >= 1 ? h : _settings.CheckUpdatesEveryHours;
+		_settings.CheckManagerUpdates = _managerCheck.IsChecked == true;
 		_settings.Save();
 	}
 

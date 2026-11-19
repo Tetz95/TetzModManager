@@ -26,7 +26,7 @@
         <Button Content="Install folder..." Click="OnInstallFolder" ToolTip="Install an unzipped download (a folder holding one or more mod folders)" />
         <Button Content="Install as separate mods..." Click="OnInstallSeparately" ToolTip="An archive that is only a bundle of separate mods (Freeman's test zips): each mod becomes its own package with its own archive" />
         <Separator />
-        <Button Content="Check for updates" Click="OnCheckUpdates" ToolTip="Ask Nexus for the newest file of every linked package" />
+        <Button Content="Check for updates" Click="OnCheckUpdates" ToolTip="Ask Nexus for the newest file of every linked package, and GitHub for a new version of the manager" />
         <Button x:Name="UpdateAllButton" Content="Update all" Click="OnUpdateAll" IsEnabled="False" />
         <Separator />
         <Button Content="Import from Vortex" Click="OnVortexImport" ToolTip="Group installed mods into packages and link them to Nexus from Vortex's downloads" />

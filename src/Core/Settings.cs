@@ -32,6 +32,28 @@ public sealed class Settings
 	/// <summary>The game's process name, checked before anything in Mods or Preferences.json is changed.</summary>
 	public string GameProcess { get; set; } = "Railroader";
 
+	/// <summary>Check Nexus for mod updates when the manager opens, and every <see cref="CheckUpdatesEveryHours"/> while it's open.</summary>
+	public bool AutoCheckUpdates { get; set; } = true;
+
+	public int CheckUpdatesEveryHours { get; set; } = 6;
+
+	/// <summary>When Nexus was last asked for updates (automatic checks wait at least an hour after any check).</summary>
+	public DateTime? LastUpdateCheck { get; set; }
+
+	/// <summary>Look for a newer release of the manager itself on GitHub when it opens.</summary>
+	public bool CheckManagerUpdates { get; set; } = true;
+
+	public DateTime? LastManagerCheck { get; set; }
+
+	/// <summary>A manager release the user chose to skip: not offered again on opening.</summary>
+	public string SkippedManagerVersion { get; set; } = "";
+
+	/// <summary>
+	/// A folder of your own edits to other authors' mods, one folder per mod named like its folder in Mods. Mods with one
+	/// get a note, and updating them asks first: an update replaces the edited files.
+	/// </summary>
+	public string LocalEditsDir { get; set; } = "";
+
 	public string ModsDir => Path.Combine(GameHome, "Mods");
 	public string PreferencesPath => Path.Combine(GameHome, "Preferences.json");
 

@@ -52,7 +52,14 @@ handler that was there before, and "Give Nexus links back" restores it).
 - **Archive**: each package's archive is copied to the archive folder (a folder install is zipped); the package's
   previous archive is deleted, so there is one per package.
 - **Check for updates** matches each package to its Nexus file and follows Nexus's file-update chain to the newest file.
-  **Update** downloads and installs it.
+  **Update** downloads and installs it. The check also runs by itself when the manager opens (if the last one is more
+  than an hour old) and every 6 hours while it's open (Settings); nothing installs until you press Update or Update all.
+- **Manager updates**: on opening (at most every 6 hours) and with Check for updates, the manager looks for a newer
+  release of itself on GitHub and offers it with its notes: Yes downloads it, closes the manager and starts the new
+  version; No skips that version.
+- **Local edits** (optional, Settings): a folder of your own edits to other authors' mods, one folder per mod named
+  like its folder in Mods. Those mods get a note, the update check names them, and updating one asks first, since the
+  update replaces the edited files: if the author's update fixes what your edit was for, the edit can go.
 - **Import from Vortex** groups the installed mods into packages from Vortex's Railroader downloads and links them to
   Nexus (Vortex names downloads `<name> <mod id> <version> <timestamp> <id>.zip`); it can copy those downloads into the
   archive. Before leaving Vortex, note that removing a game from Vortex deletes every file it deployed: copy the

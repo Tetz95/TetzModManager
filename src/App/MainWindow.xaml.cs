@@ -68,6 +68,7 @@ public partial class MainWindow : Window
 	private ScanResult _scan = new([], []);
 	private List<PackageRow> _rows = [];
 	private readonly DispatcherTimer _gameTimer = new() { Interval = TimeSpan.FromSeconds(3) };
+	private readonly DispatcherTimer _updateTimer = new() { Interval = TimeSpan.FromMinutes(15) };
 	private bool _busy;
 
 	public MainWindow()
@@ -126,7 +127,164 @@ public partial class MainWindow : Window
 		{
 			Log("Nexus \"Mod Manager Download\" links come here.");
 		}
+		if (Environment.GetEnvironmentVariable("TETZMM_SNAPSHOT") == null)
+		{
+			Dispatcher.BeginInvoke(DispatcherPriority.ApplicationIdle, () => _ = StartupChecks());
+		}
 		Snapshot();
+	}
+
+	// ---- automatic checks ----
+
+	/// <summary>On opening: a newer manager on GitHub, then mod updates on Nexus; then mod updates every few hours.</summary>
+	private async Task StartupChecks()
+	{
+		await CheckManager(manual: false);
+		// nxm links open the manager often: on opening, check only when the last check is an hour old.
+		await AutoCheckMods(TimeSpan.FromHours(1));
+		_updateTimer.Tick += async (_, _) => await AutoCheckMods(TimeSpan.FromHours(Math.Max(1, _settings.CheckUpdatesEveryHours)));
+		_updateTimer.Start();
+	}
+
+	private async Task AutoCheckMods(TimeSpan after)
+	{
+		if (!_settings.AutoCheckUpdates || _busy || _settings.ReadNexusKey() == null
+			|| _settings.LastUpdateCheck is DateTime last && DateTime.Now - last < after)
+		{
+			return;
+		}
+		await CheckModUpdates(auto: true);
+	}
+
+	/// <summary>Asks Nexus for the newest file of every linked package. Automatic checks only log their errors.</summary>
+	private async Task CheckModUpdates(bool auto)
+	{
+		using NexusClient? nexus = auto ? (_settings.ReadNexusKey() is string key ? new NexusClient(key) : null) : Nexus();
+		if (nexus == null)
+		{
+			return;
+		}
+		async Task Work()
+		{
+			Log($"Checking {_scan.Packages.Count(p => p.Record?.NexusModId != null)} linked packages on Nexus{(auto ? " (automatic check)" : "")}...");
+			int n = await Updates.Check(nexus, _state, _scan.Packages, Log);
+			_settings.LastUpdateCheck = DateTime.Now;
+			_settings.Save();
+			Log(n == 0 ? "Everything is up to date." : $"{n} updates.");
+			foreach (InstalledPackage p in _scan.Packages.Where(p => p.UpdateAvailable))
+			{
+				foreach (InstalledMod m in p.Members.Where(m => m.LocalEdit != null))
+				{
+					Log($"  {p.Name}: you have a local edit of {m.Manifest.Name} ({m.LocalEdit}); check whether the update makes it unnecessary.");
+				}
+			}
+		}
+		if (!auto)
+		{
+			await Run("Update check", Work, needsGameClosed: false);
+		}
+		else if (!_busy)
+		{
+			await Run("Update check", async () =>
+			{
+				try
+				{
+					await Work();
+				}
+				catch (Exception e)
+				{
+					Log($"Automatic update check failed: {e.Message}");
+				}
+			}, needsGameClosed: false);
+		}
+	}
+
+	/// <summary>
+	/// A newer release of the manager on GitHub: offered with its notes; installing downloads it, closes the manager and
+	/// starts the new one. On opening, at most every 6 hours and not for a release the user skipped.
+	/// </summary>
+	private async Task CheckManager(bool manual)
+	{
+		if (!manual && (!_settings.CheckManagerUpdates || _settings.LastManagerCheck is DateTime t && DateTime.Now - t < TimeSpan.FromHours(6)))
+		{
+			return;
+		}
+		ManagerRelease? r;
+		try
+		{
+			r = await ManagerUpdate.Latest();
+		}
+		catch (Exception e)
+		{
+			Log($"Manager update check failed: {e.Message}");
+			return;
+		}
+		_settings.LastManagerCheck = DateTime.Now;
+		_settings.Save();
+		Version current = ManagerUpdate.Current;
+		if (r == null || r.Version <= current)
+		{
+			if (manual)
+			{
+				Log($"Tetz's Mod Manager {current} is the newest release.");
+			}
+			return;
+		}
+		if (!manual && _settings.SkippedManagerVersion == r.Version.ToString())
+		{
+			Log($"Tetz's Mod Manager {r.Version} is out (skipped; Check for updates offers it again).");
+			return;
+		}
+		Log($"Tetz's Mod Manager {r.Version} is out (you have {current}): {r.Page}");
+		string notes = r.Notes.Trim();
+		notes = notes.Length > 1500 ? notes[..1500] + "..." : notes;
+		MessageBoxResult a = MessageBox.Show(this,
+			$"Tetz's Mod Manager {r.Version} is out (you have {current}).\n\n{notes}\n\n"
+			+ "Yes: download it, close the manager and start the new version.\nNo: skip this version.\nCancel: ask again next time.",
+			"Manager update", MessageBoxButton.YesNoCancel, MessageBoxImage.Information);
+		if (a == MessageBoxResult.No)
+		{
+			_settings.SkippedManagerVersion = r.Version.ToString();
+			_settings.Save();
+			Log($"Skipped manager {r.Version}.");
+			return;
+		}
+		if (a != MessageBoxResult.Yes)
+		{
+			return;
+		}
+		if (ManagerUpdate.InstallDir() is not string install)
+		{
+			MessageBox.Show(this, $"The manager's folder can't be found: download {r.Version} from {r.Page}.", "Manager update");
+			return;
+		}
+		if (_busy)
+		{
+			MessageBox.Show(this, "A job is running: use Check for updates again once it has finished.", "Manager update");
+			return;
+		}
+		_busy = true;
+		Progress.Visibility = Visibility.Visible;
+		Progress.IsIndeterminate = false;
+		try
+		{
+			Log($"Downloading Tetz's Mod Manager {r.Version}...");
+			string dir = await ManagerUpdate.Download(r, new Progress<double>(p => Progress.Value = p * 100));
+			ManagerUpdate.ReplaceAfterExit(dir, install);
+			Log($"Closing to install {r.Version}; the new version starts by itself.");
+			Application.Current.Shutdown();
+		}
+		catch (Exception e)
+		{
+			Log($"Manager update failed: {e.Message}");
+			MessageBox.Show(this, e.Message, "Manager update", MessageBoxButton.OK, MessageBoxImage.Warning);
+		}
+		finally
+		{
+			_busy = false;
+			Progress.Visibility = Visibility.Collapsed;
+			Progress.IsIndeterminate = true;
+		}
 	}
 
 	/// <summary>Tests: TETZMM_SNAPSHOT=&lt;png&gt; renders the window to a file and closes (TETZMM_SELECT picks a row first).</summary>
@@ -430,6 +588,11 @@ public partial class MainWindow : Window
 			{
 				lines.Add(Describe(p));
 				ask |= p.Action is PlanAction.Downgrade or PlanAction.Blocked;
+				if (p.Existing?.LocalEdit is string edit && p.Copies)
+				{
+					lines.Add($"    your local edit in {edit} is replaced: if the update fixes what it was for, it can go");
+					ask = true;
+				}
 				if (p.ReplacesVortexFolder)
 				{
 					lines.Add("    deployed by Vortex now: Vortex will report it as changed until Railroader is removed from Vortex");
@@ -651,17 +814,8 @@ public partial class MainWindow : Window
 
 	private async void OnCheckUpdates(object sender, RoutedEventArgs e)
 	{
-		using NexusClient? nexus = Nexus();
-		if (nexus == null)
-		{
-			return;
-		}
-		await Run("Update check", async () =>
-		{
-			Log($"Checking {_scan.Packages.Count(p => p.Record?.NexusModId != null)} linked packages on Nexus...");
-			int n = await Updates.Check(nexus, _state, _scan.Packages, Log);
-			Log(n == 0 ? "Everything is up to date." : $"{n} updates.");
-		}, needsGameClosed: false);
+		await CheckModUpdates(auto: false);
+		await CheckManager(manual: true);
 	}
 
 	private async Task UpdateRows(List<PackageRow> rows)
@@ -670,6 +824,28 @@ public partial class MainWindow : Window
 		if (rows.Count == 0 || !GameClosedOrSay())
 		{
 			return;
+		}
+		List<PackageRow> edited = rows.Where(r => r.Package.Members.Any(m => m.LocalEdit != null)).ToList();
+		if (edited.Count > 0)
+		{
+			MessageBoxResult a = MessageBox.Show(this,
+				"These have your own local edits, which the update replaces:\n\n"
+				+ string.Join("\n", edited.SelectMany(r => r.Package.Members.Where(m => m.LocalEdit != null).Select(m => $"{r.Name}: {m.LocalEdit}")))
+				+ "\n\nIf the author's update fixes what an edit was for, the edit can go; otherwise apply it again afterwards.\n\n"
+				+ "Yes: update these too.\nNo: update the others only.\nCancel: update nothing.",
+				"Local edits", MessageBoxButton.YesNoCancel, MessageBoxImage.Warning);
+			if (a == MessageBoxResult.Cancel)
+			{
+				return;
+			}
+			if (a == MessageBoxResult.No)
+			{
+				rows = rows.Except(edited).ToList();
+				if (rows.Count == 0)
+				{
+					return;
+				}
+			}
 		}
 		using NexusClient? nexus = Nexus();
 		if (nexus == null)

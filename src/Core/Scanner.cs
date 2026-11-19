@@ -18,6 +18,8 @@ public sealed class InstalledMod
 	public bool? Enabled { get; set; }
 	public string? PreferencesVersion { get; set; }
 	public List<string> Notes { get; } = [];
+	/// <summary>The folder of the user's own edits to this mod (Settings.LocalEditsDir), when there is one.</summary>
+	public string? LocalEdit { get; set; }
 }
 
 /// <summary>A package as installed: its record (null for a mod no package claims) and its mods in Mods.</summary>
@@ -124,6 +126,11 @@ public static class Scanner
 				mod.InPreferences = prefs.Find(id) != null;
 				mod.Enabled = prefs.Enabled(id);
 				mod.PreferencesVersion = prefs.Version(id);
+			}
+			if (!string.IsNullOrWhiteSpace(settings.LocalEditsDir) && Path.GetFullPath(Path.Combine(settings.LocalEditsDir, mod.FolderName)) is string edit && Directory.Exists(edit))
+			{
+				mod.LocalEdit = edit;
+				mod.Notes.Add($"your local edit in {edit}: an update replaces it");
 			}
 			mods.Add(mod);
 		}
