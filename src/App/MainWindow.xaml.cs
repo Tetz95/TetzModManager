@@ -399,7 +399,7 @@ public partial class MainWindow : Window
 	private async Task Install(string path, NexusSource? nexus, bool separate = false)
 	{
 		ScanResult installed = Scanner.Scan(_settings, null, _state);
-		InstallPlan plan = await Task.Run(() => Installer.Plan(_settings, path, installed, _state, nexus?.ModId));
+		InstallPlan plan = await Task.Run(() => Installer.Plan(_settings, path, installed, _state, nexus?.ModId, nexus?.DisplayName));
 		if (separate)
 		{
 			try
@@ -516,7 +516,7 @@ public partial class MainWindow : Window
 		Progress.IsIndeterminate = true;
 		try
 		{
-			await Install(dest, new NexusSource(modId, fileId, file.FileName, file.Version));
+			await Install(dest, new NexusSource(modId, fileId, file.FileName, file.Version, file.Name));
 		}
 		finally
 		{

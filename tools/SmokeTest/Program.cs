@@ -22,6 +22,9 @@ string Download(string startsWith) =>
 Settings real = new() { HomeDir = realHome, VortexDownloadsDir = vortex, ArchiveDir = Path.Combine(data, "archive-real") };
 string original = File.ReadAllText(real.PreferencesPath);
 Check(Preferences.Load(real.PreferencesPath).Serialize() == original, "Preferences.json round trip is byte-identical");
+Check(Installer.CleanName("BSMS 6.0.4 504 1 2026-11-19T08-41Z UR6lEFE0n") == "BSMS", "Nexus download suffix (v3) is stripped from names");
+Check(Installer.CleanName("Ties Load-1810-1-2-0-1731000000") == "Ties Load", "Nexus download suffix (v1) is stripped from names");
+Check(Installer.CleanName("Freeman Test") == "Freeman Test" && Installer.CleanName("Tetz's Rails Load 1.2.0") == "Tetz's Rails Load", "plain archive names keep their name");
 
 StateStore state = new();
 ScanResult scan = Scanner.Scan(real, Preferences.Load(real.PreferencesPath), state);

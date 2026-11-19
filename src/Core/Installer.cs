@@ -58,6 +58,8 @@ public sealed class InstallPlan : IDisposable
 	public string Name { get; set; } = "";
 	/// <summary>Several mods, none named like the archive ("Freeman Test"): the package keeps the archive's name.</summary>
 	public bool NamedAfterArchive { get; set; }
+	/// <summary>The archive's name without its version or Nexus download suffix (the Nexus file name for downloads).</summary>
+	public string ArchiveName { get; set; } = "";
 
 	public void Dispose()
 	{
@@ -69,12 +71,12 @@ public sealed class InstallPlan : IDisposable
 }
 
 /// <summary>Where an install came from, kept with the package.</summary>
-public sealed record NexusSource(int ModId, int FileId, string FileName, string? FileVersion);
+public sealed record NexusSource(int ModId, int FileId, string FileName, string? FileVersion, string? DisplayName = null);
 
 public static class Installer
 {
 	/// <summary>Extracts the archive (or takes the folder) and works out every mod in it and what installing does.</summary>
-	public static InstallPlan Plan(Settings settings, string source, ScanResult installed, StateStore state, int? nexusModId = null)
+	public static InstallPlan Plan(Settings settings, string source, ScanResult installed, StateStore state, int? nexusModId = null, string? displayName = null)
 	{
 		bool isFolder = Directory.Exists(source);
 		string extract = isFolder ? source : Path.Combine(Settings.WorkDir, Guid.NewGuid().ToString("N")[..12]);
@@ -101,7 +103,8 @@ public static class Installer
 			{
 				PlanOverlays(plan, installed);
 			}
-			string archiveName = CleanName(Path.GetFileNameWithoutExtension(source.TrimEnd('\\', '/')));
+			string archiveName = CleanName(displayName ?? Path.GetFileNameWithoutExtension(source.TrimEnd('\\', '/')));
+			plan.ArchiveName = archiveName;
 			plan.NamedAfterArchive = plan.Mods.Count(p => p.Action != PlanAction.Blocked) > 1
 				&& !plan.Mods.Any(p => Scanner.Normalize(p.Manifest.Name) is { Length: >= 3 } mod && Scanner.Normalize(archiveName) is { Length: >= 3 } arc
 					&& (mod.Contains(arc) || arc.Contains(mod)));
@@ -109,7 +112,7 @@ public static class Installer
 				?? (plan.NamedAfterArchive ? archiveName : null)
 				?? plan.Mods.Where(p => !p.Shared).Select(p => p.Manifest.Name).FirstOrDefault()
 				?? plan.Mods.Select(p => p.Manifest.Name).FirstOrDefault()
-				?? CleanName(Path.GetFileNameWithoutExtension(source.TrimEnd('\\', '/')));
+				?? archiveName;
 		}
 		catch
 		{
@@ -165,7 +168,7 @@ public static class Installer
 	private static PlannedMod PlanMod(Settings settings, InstallPlan plan, string root, ModManifest m, ScanResult installed, StateStore state)
 	{
 		InstalledMod? existing = installed.Mods.FirstOrDefault(i => string.Equals(i.Key, m.Key, StringComparison.OrdinalIgnoreCase));
-		string folderName = root == plan.ExtractDir && !plan.IsFolder ? SafeFolderName(m.Name, CleanName(Path.GetFileNameWithoutExtension(plan.SourcePath))) : Path.GetFileName(root);
+		string folderName = root == plan.ExtractDir && !plan.IsFolder ? SafeFolderName(m.Name, plan.ArchiveName) : Path.GetFileName(root);
 		string target = existing?.Folder ?? Path.Combine(settings.ModsDir, folderName);
 		if (existing == null)
 		{
@@ -560,8 +563,15 @@ public static class Installer
 		}
 	}
 
-	public static string CleanName(string archiveName) =>
-		System.Text.RegularExpressions.Regex.Replace(archiveName, @"[\s_-]+v?\d+(\.\d+)*[a-z]?(\s*\(.*\))?$", "").Trim();
+	/// <summary>An archive name without its version and without the suffix Nexus adds to downloaded files
+	/// ("Name 504 1 2026-11-19T08-41Z UR6lEFE0n", "Name-504-1-0-1700000000").</summary>
+	public static string CleanName(string archiveName)
+	{
+		string s = System.Text.RegularExpressions.Regex.Replace(archiveName, @"\s+\d+\s+\S+\s+\d{4}-\d\d-\d\dT\d\d-\d\dZ\s+\w+$", "");
+		s = System.Text.RegularExpressions.Regex.Replace(s, @"-\d+(-[\w.]+)*-\d{10}$", "");
+		s = System.Text.RegularExpressions.Regex.Replace(s, @"[\s_-]+v?\d+(\.\d+)*[a-z]?(\s*\(.*\))?$", "").Trim();
+		return s.Length > 0 ? s : archiveName.Trim();
+	}
 
 	private static string SafeFolderName(string name, string fallback)
 	{
