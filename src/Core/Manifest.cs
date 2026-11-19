@@ -18,7 +18,10 @@ public sealed record ModManifest(
 	bool Umm,
 	IReadOnlyList<string> Required,
 	IReadOnlyList<string> Optional,
-	IReadOnlyList<string> Incompatible)
+	IReadOnlyList<string> Incompatible,
+	// A Unity Mod Manager mod's AssemblyName: a Legacy DLL mod, which 0.6 can't load. Without one (sound packs such as
+	// Reaper's: info.json + Audio) the files are data that 0.6 mods such as Rex's Tool Box still read.
+	string? UmmAssembly = null)
 {
 	private static readonly JsonDocumentOptions Options = new() { AllowTrailingCommas = true, CommentHandling = JsonCommentHandling.Skip };
 
@@ -87,7 +90,8 @@ public sealed record ModManifest(
 				"",
 				null,
 				true,
-				[], [], []);
+				[], [], [],
+				Str(root, "AssemblyName"));
 		}
 		return null;
 	}
