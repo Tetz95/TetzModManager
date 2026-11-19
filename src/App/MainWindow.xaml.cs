@@ -416,10 +416,14 @@ public partial class MainWindow : Window
 		{
 			List<string> lines = [];
 			bool ask = plan.Overlays.Count > 0;
-			if (plan.Mods.Count > 0 && plan.Mods.All(m => m.Manifest.Umm && !string.IsNullOrEmpty(m.Manifest.UmmAssembly)))
+			if (plan.Mods.Count > 0 && plan.Mods.All(m => m.Manifest.Umm))
 			{
-				// A Legacy DLL mod (Unity Mod Manager with an assembly), e.g. an author's Legacy update on a page linked to a 0.6 conversion.
-				lines.Add("Only Legacy (Unity Mod Manager) DLL mods: Railroader 0.6 doesn't load them.");
+				// Legacy (Unity Mod Manager) mods, e.g. an author's Legacy update on a page linked to a 0.6 conversion. The
+				// game loads none of them; data-only ones (no assembly) work only where a 0.6 mod reads them.
+				lines.Add(plan.Mods.Any(m => !string.IsNullOrEmpty(m.Manifest.UmmAssembly))
+					? "Only Legacy (Unity Mod Manager) mods, with DLLs: Railroader 0.6 doesn't load them."
+					: "Only Legacy (Unity Mod Manager) mods without DLLs: Railroader 0.6 doesn't load them itself; they work only if "
+						+ "another mod reads them (Rex's Tool Box reads Reaper's sound packs, for example).");
 				ask = true;
 			}
 			foreach (PlannedMod p in plan.Mods)
