@@ -317,15 +317,13 @@ public static class Installer
 				replaced.Add(p.Manifest.Key);
 			}
 			Files.CopyDirectory(p.Source, p.Target);
-			if (kept)
-			{
-				foreach (string f in CarryOverSettings(PreviousPath(p.Manifest.Key), p.Target))
-				{
-					log($"    kept your {f}");
-				}
-			}
+			List<string> carried = kept ? CarryOverSettings(PreviousPath(p.Manifest.Key), p.Target) : [];
 			string what = p.Existing == null ? $"Installed {p.Manifest.Name} {p.Manifest.Version}" : $"{p.Action} {p.Manifest.Name} {p.Existing.Manifest.Version} -> {p.Manifest.Version}";
 			log($"  {what} in \"{Path.GetFileName(p.Target)}\"" + (kept ? " (previous kept for rollback)" : ""));
+			foreach (string f in carried)
+			{
+				log($"    kept your {f}");
+			}
 			if (p.Manifest.Identifier is string id && prefs.SetVersionOrAdd(id, p.Manifest.Version, p.Manifest.Scope))
 			{
 				log($"    added {id} to Preferences.json, enabled");
