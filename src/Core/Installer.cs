@@ -317,6 +317,13 @@ public static class Installer
 				replaced.Add(p.Manifest.Key);
 			}
 			Files.CopyDirectory(p.Source, p.Target);
+			if (kept)
+			{
+				foreach (string f in CarryOverSettings(PreviousPath(p.Manifest.Key), p.Target))
+				{
+					log($"    kept your {f}");
+				}
+			}
 			string what = p.Existing == null ? $"Installed {p.Manifest.Name} {p.Manifest.Version}" : $"{p.Action} {p.Manifest.Name} {p.Existing.Manifest.Version} -> {p.Manifest.Version}";
 			log($"  {what} in \"{Path.GetFileName(p.Target)}\"" + (kept ? " (previous kept for rollback)" : ""));
 			if (p.Manifest.Identifier is string id && prefs.SetVersionOrAdd(id, p.Manifest.Version, p.Manifest.Scope))
@@ -514,6 +521,35 @@ public static class Installer
 		Directory.CreateDirectory(Settings.PreviousDir);
 		Files.TryDeleteDirectory(dest);
 		Files.MoveDirectory(folder, dest);
+	}
+
+	// Files a mod writes for itself (its settings) aren't in its archive, so an update that replaces the folder left them
+	// in the rollback copy and the mod started over with its defaults (Locomotive Traction lost "delivered_sand": no sand
+	// stocks or dealers). Settings-like files the new version doesn't ship are carried over from the previous copy.
+	private static readonly System.Text.RegularExpressions.Regex SettingsFile = new(
+		@"(^|[-_. ])(settings|config|configuration|options|preferences)([-_. ][^\/]*)?\.(json|xml|ini|cfg|txt)$|\.cfg$",
+		System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
+	private static List<string> CarryOverSettings(string previous, string target)
+	{
+		List<string> kept = [];
+		if (!Directory.Exists(previous))
+		{
+			return kept;
+		}
+		foreach (string f in Directory.EnumerateFiles(previous, "*", SearchOption.AllDirectories))
+		{
+			string rel = Path.GetRelativePath(previous, f);
+			string dest = Path.Combine(target, rel);
+			if (!SettingsFile.IsMatch(Path.GetFileName(f)) || File.Exists(dest))
+			{
+				continue;
+			}
+			Directory.CreateDirectory(Path.GetDirectoryName(dest)!);
+			File.Copy(f, dest);
+			kept.Add(rel);
+		}
+		return kept;
 	}
 
 	private static void CopyFiles(string from, string to, List<string> files)
