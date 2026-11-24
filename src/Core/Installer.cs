@@ -304,6 +304,7 @@ public static class Installer
 	{
 		Game.EnsureClosed(settings);
 		Preferences prefs = Preferences.Load(settings.PreferencesPath);
+		ScanResult before = Scanner.Scan(settings, prefs, state);
 		List<string> replaced = [];
 		foreach (PlannedMod p in plan.Mods)
 		{
@@ -327,7 +328,7 @@ public static class Installer
 			{
 				log($"    kept your {f}");
 			}
-			if (p.Manifest.Identifier is string id && prefs.SetVersionOrAdd(id, p.Manifest.Version, p.Manifest.Scope))
+			if (p.Manifest.Identifier is string id && SetEntry(prefs, before, p.Manifest, id))
 			{
 				log($"    added {id} to Preferences.json, enabled");
 			}
@@ -387,6 +388,7 @@ public static class Installer
 		}
 
 		ReapplyAddOns(state, rec, replaced, plan, log);
+		KeepRequired(settings, state, prefs, before, [], log);
 		prefs.Save();
 		string archived = ModArchive.Store(settings, state, rec, plan, nexus?.FileName);
 		log($"  archive: {archived}");
@@ -441,6 +443,7 @@ public static class Installer
 			throw new InvalidOperationException($"No earlier version of {package.Name} is kept.");
 		}
 		Preferences prefs = Preferences.Load(settings.PreferencesPath);
+		ScanResult before = Scanner.Scan(settings, prefs, state);
 		foreach (InstalledMod mod in mods)
 		{
 			string kept = PreviousPath(mod.Key);
@@ -451,10 +454,11 @@ public static class Installer
 			Files.MoveDirectory(swap, kept);
 			if (back.Identifier is string id)
 			{
-				prefs.SetVersionOrAdd(id, back.Version, back.Scope);
+				SetEntry(prefs, before, back, id);
 			}
 			log($"Rolled back {mod.Manifest.Name}: {mod.Manifest.Version} -> {back.Version}");
 		}
+		KeepRequired(settings, state, prefs, before, [], log);
 		prefs.Save();
 		if (package.Record != null)
 		{
@@ -474,6 +478,7 @@ public static class Installer
 	{
 		Game.EnsureClosed(settings);
 		Preferences prefs = Preferences.Load(settings.PreferencesPath);
+		ScanResult before = Scanner.Scan(settings, prefs, state);
 		foreach (InstalledMod mod in package.Own)
 		{
 			KeepPrevious(mod.Folder, mod.Key);
@@ -509,8 +514,72 @@ public static class Installer
 			}
 			state.Packages.Remove(package.Record);
 		}
+		KeepRequired(settings, state, prefs, before, package.Own.ToList(), log);
 		prefs.Save();
 		state.Save();
+	}
+
+	/// <summary>
+	/// Enables or disables mods in Preferences.json. Enabling gives a mod without an entry one, unless another of the mods
+	/// requires it (the game loads it then). Disabling keeps mods enabled that only the disabled ones made the game load.
+	/// </summary>
+	public static void SetEnabled(Settings settings, StateStore state, IReadOnlyCollection<InstalledMod> mods, bool on, Action<string> log)
+	{
+		Game.EnsureClosed(settings);
+		Preferences prefs = Preferences.Load(settings.PreferencesPath);
+		ScanResult before = Scanner.Scan(settings, prefs, state);
+		foreach (InstalledMod m in mods)
+		{
+			if (m.Manifest.Identifier is not string id)
+			{
+				continue;
+			}
+			if (prefs.Find(id) != null)
+			{
+				prefs.SetEnabled(id, on);
+			}
+			else if (on && !m.LoadedAsDependency && !mods.Any(o => o != m && Requires(o.Manifest, id)))
+			{
+				prefs.SetVersionOrAdd(id, m.Manifest.Version, m.Manifest.Scope);
+			}
+		}
+		if (!on)
+		{
+			KeepRequired(settings, state, prefs, before, mods, log);
+		}
+		prefs.Save();
+	}
+
+	private static bool Requires(ModManifest m, string identifier) => m.Required.Any(d => ModManifest.SplitDependency(d).Id == identifier);
+
+	/// <summary>The entry's version, or a new enabled entry: but none for a mod the game was loading because another requires it.</summary>
+	private static bool SetEntry(Preferences prefs, ScanResult before, ModManifest manifest, string id) =>
+		(prefs.Find(id) != null || !before.Mods.Any(m => m.Manifest.Identifier == id && m.LoadedAsDependency))
+		&& prefs.SetVersionOrAdd(id, manifest.Version, manifest.Scope);
+
+	/// <summary>
+	/// The game keeps no entry for a mod that another loaded mod requires, so it would stop loading with the last mod that
+	/// required it. It's given an enabled entry then, unless it came as part of a package whose other mods require it (a library).
+	/// </summary>
+	private static void KeepRequired(Settings settings, StateStore state, Preferences prefs, ScanResult before, IReadOnlyCollection<InstalledMod> leaveOut, Action<string> log)
+	{
+		ScanResult after = Scanner.Scan(settings, prefs, state);
+		List<(InstalledMod Was, InstalledMod Now)> lost = [];
+		foreach (InstalledMod was in before.Mods.Where(m => m.LoadedAsDependency && !leaveOut.Any(x => x.Key == m.Key)))
+		{
+			InstalledMod? now = after.Mods.FirstOrDefault(m => m.Key == was.Key);
+			if (now is { Loads: false, InPreferences: false, CannotLoad: false } 
+				&& after.Packages.Any(p => p.Own.Contains(now) && !p.Members.Any(o => o != now && Requires(o.Manifest, now.Manifest.Identifier!))))
+			{
+				lost.Add((was, now));
+			}
+		}
+		// One that another of them requires loads with that one.
+		foreach ((InstalledMod was, InstalledMod now) in lost.Where(x => !lost.Any(o => o.Now != x.Now && Requires(o.Now.Manifest, x.Now.Manifest.Identifier!))).ToList())
+		{
+			prefs.SetVersionOrAdd(now.Manifest.Identifier!, now.Manifest.Version, now.Manifest.Scope);
+			log($"  Kept {now.Manifest.Name} enabled: it was loaded only because {LoadRules.Names(was.RequiredBy)} required it");
+		}
 	}
 
 	private static string PreviousPath(string key) =>

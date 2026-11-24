@@ -157,5 +157,95 @@ Check(Installer.OlderBuild(buildB, buildA) != null && Installer.NewerBuild(build
 File.SetLastWriteTime(Path.Combine(buildB, "a.dll"), new DateTime(1980, 1, 1));
 Check(Installer.OlderBuild(buildB, buildA) == null, "files without times (1980) don't count as older");
 
+// ---- 3. Which mods load, and why not the others (a made-up home) ----
+Log($"game version: {Steam.GameVersion() ?? "not found"}");
+Check(Steam.GameVersion() is string gv && System.Text.RegularExpressions.Regex.IsMatch(gv, @"^\d+\.\d+\.\d+[a-z]?$"), "the game's version is found");
+foreach (InstalledMod m in scan.Mods.Where(m => m.NotLoaded != null))
+{
+	Log($"  {m.Manifest.Name}: {m.NotLoaded}");
+}
+Check(scan.Mods.Where(m => m.LoadedAsDependency).All(m => m.NotLoaded == null), "a mod loaded because another requires it has no reason against it");
+string home3 = Path.Combine(data, "home3");
+Settings rules = new() { HomeDir = home3, ArchiveDir = Path.Combine(data, "archive3"), GameProcess = "NoSuchProcess-TetzMM" };
+StateStore st3 = new();
+void Mod(string id, string version, string required = "", string incompatible = "", string extra = "")
+{
+	string dir = Path.Combine(home3, "Mods", id.Replace('/', '-'));
+	Directory.CreateDirectory(dir);
+	string List(string s) => string.Join(",", s.Split(';', StringSplitOptions.RemoveEmptyEntries).Select(x => $"\"{x}\""));
+	File.WriteAllText(Path.Combine(dir, "Info.json"),
+		$$"""{ "identifier": "{{id}}", "name": "{{id[2..]}}", "version": "{{version}}", {{extra}} "dependencies": { "required": [{{List(required)}}], "incompatible": [{{List(incompatible)}}] } }""");
+}
+void Prefs(string entries, bool dll = true) => File.WriteAllText(Path.Combine(home3, "Preferences.json"),
+	$$"""{ "mods": [{{string.Join(",", entries.Split(' ', StringSplitOptions.RemoveEmptyEntries).Select(e => $$"""{ "identifier": "{{e.TrimStart('-')}}", "version": "1.0.0", "enabled": {{(e.StartsWith('-') ? "false" : "true")}}, "scope": 0 }"""))}}], "settings": { "mods.allow-dll": {{(dll ? 1 : 0)}} } }""");
+Preferences P3() => Preferences.Load(rules.PreferencesPath);
+InstalledMod M(string id) => Scanner.Scan(rules, P3(), st3).Mods.First(m => m.Key == id);
+bool Why(string id, string text) => M(id) is { Loads: false, NotLoaded: string why } && (why.Contains(text) || Say(why));
+bool Say(string s)
+{
+	Log("  got: " + s);
+	return false;
+}
+Mod("t/lib", "1.0.0");
+Mod("t/main", "1.0.0", "rr/game;t/lib");
+Mod("t/yard", "1.0.0", "t/main >=1.0.0");
+Mod("t/off", "1.0.0");
+Mod("t/never", "1.0.0");
+Mod("t/missing", "1.0.0", "t/nothere");
+Mod("t/old", "1.0.0", "t/main >=2.0.0");
+Mod("t/chain", "1.0.0", "t/missing");
+Mod("t/foe", "1.0.0", "", "t/main");
+Mod("t/future", "1.0.0", "rr/game >=9.0.0");
+Mod("t/range", "1.0.0", "rr/game >=0.6.0 <9.0.0;t/lib ^1.0.0;t/main ~1.0.0");
+Mod("t/dll", "1.0.0", extra: "\"assemblies\": [\"a.dll\"],");
+Mod("t/c1", "1.0.0", "t/c2");
+Mod("t/c2", "1.0.0", "t/c1");
+Mod("t/lone", "1.0.0", "t/foe");
+Prefs("t/yard -t/off t/missing t/old t/chain t/foe t/future t/range t/dll t/c1", dll: false);
+Check(M("t/main").LoadedAsDependency && M("t/lib").LoadedAsDependency && M("t/yard") is { Loads: true, LoadedAsDependency: false } && M("t/range").Loads,
+	"required mods load without an entry; constraints that hold");
+Check(M("t/main").RequiredBy.Contains("yard") && !M("t/main").RequiredBy.Contains("old"), "it says which loaded mods require it");
+Check(Why("t/off", "Disabled in Preferences.json") && M("t/off").OffByChoice && M("t/off").Notes.Count == 0, "switched off: a reason, no warning");
+Check(Why("t/never", "not in Preferences.json, and no mod requires it"), "never enabled");
+Check(Why("t/missing", "needs t/nothere, which isn't installed"), "a missing requirement");
+Check(Why("t/old", "needs main >=2.0.0 (1.0.0 installed)"), "a requirement that's too old");
+Check(Why("t/chain", "needs missing, which can't load (needs t/nothere"), "a requirement that can't load");
+Check(Why("t/foe", "it's incompatible with main"), "an incompatible mod");
+Check(Why("t/future", "needs Railroader >=9.0.0"), "a newer game needed");
+Check(Why("t/dll", "DLL mods are off"), "DLL mods off");
+Check(Why("t/c1", "require each other") && Why("t/c2", "require each other"), "a circular requirement");
+Check(Why("t/lone", "can't load") && M("t/lone").CannotLoad, "off, and it couldn't load if it were on");
+Prefs("t/yard t/off", dll: true);
+Installer.SetEnabled(rules, st3, [M("t/yard")], false, Log);
+Check(P3().Enabled("t/main") == true && P3().Find("t/lib") == null && M("t/main").Loads && M("t/lib").LoadedAsDependency,
+	"disabling the last mod that required one keeps it enabled (not what it requires itself)");
+Prefs("t/yard t/range");
+Installer.SetEnabled(rules, st3, [M("t/yard")], false, Log);
+Check(P3().Find("t/main") == null && M("t/main").LoadedAsDependency, "no entry while another mod still requires it");
+Prefs("-t/main");
+Installer.SetEnabled(rules, st3, [M("t/never"), M("t/yard"), M("t/main")], true, Log);
+Check(P3().Enabled("t/never") == true && P3().Enabled("t/yard") == true && P3().Enabled("t/main") == true && M("t/never").Loads, "enabling a mod without an entry adds one");
+Prefs("t/yard");
+Installer.Uninstall(rules, st3, Scanner.Scan(rules, P3(), st3).Packages.First(p => p.Primary?.Key == "t/yard"), Log);
+Check(P3().Enabled("t/main") == true && P3().Find("t/yard") == null, "uninstalling the last mod that required one keeps it enabled");
+// A library that came only inside another package goes off with it.
+Mod("t/pack", "1.0.0", "t/packlib");
+Mod("t/packlib", "1.0.0");
+st3.Packages.Add(new PackageRecord { Members = ["t/pack", "t/packlib"], Name = null, Source = "zip", SourceName = "pack" });
+Prefs("t/pack");
+Installer.SetEnabled(rules, st3, [M("t/pack")], false, Log);
+Check(P3().Find("t/packlib") == null && Why("t/packlib", "(which requires it) isn't loaded"), "a package's own library goes off with it");
+// Updating a mod loaded as a dependency doesn't give it an entry.
+Mod("t/yard", "1.0.0", "t/main >=1.0.0");
+Prefs("t/yard");
+string mainSrc = Path.Combine(data, "main-src", "t-main");
+Files.CopyDirectory(Path.Combine(home3, "Mods", "t-main"), mainSrc);
+File.WriteAllText(Path.Combine(mainSrc, "Info.json"), File.ReadAllText(Path.Combine(mainSrc, "Info.json")).Replace("\"version\": \"1.0.0\"", "\"version\": \"1.1.0\""));
+using (InstallPlan plan3 = Installer.Plan(rules, mainSrc, Scanner.Scan(rules, P3(), st3), st3))
+{
+	Installer.Apply(rules, st3, plan3, null, Log);
+}
+Check(M("t/main") is { Loads: true, InPreferences: false } && M("t/main").Manifest.Version == "1.1.0", "updating a mod loaded as a dependency adds no entry");
+
 Console.WriteLine(failures == 0 ? "ALL PASSED" : $"{failures} FAILED");
 return failures;

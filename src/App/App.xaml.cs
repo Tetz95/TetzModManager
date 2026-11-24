@@ -16,6 +16,12 @@ public partial class App : Application
 	protected override void OnStartup(StartupEventArgs e)
 	{
 		base.OnStartup(e);
+		if (Environment.GetEnvironmentVariable("TETZMM_SNAPSHOT") != null)
+		{
+			MainWindow = new MainWindow(); // a test render, beside a running manager
+			MainWindow.Show();
+			return;
+		}
 		_single = new Mutex(true, @"Local\TetzModManager.Single", out bool first);
 		if (!first)
 		{

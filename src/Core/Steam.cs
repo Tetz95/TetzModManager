@@ -1,4 +1,5 @@
 using System.Text;
+using System.Text.RegularExpressions;
 using Microsoft.Win32;
 
 namespace TetzModManager;
@@ -117,6 +118,29 @@ public static class Steam
 			}
 		}
 		return null;
+	}
+
+	/// <summary>The installed game's version ("0.6.3") from Unity's player settings, or null.</summary>
+	public static string? GameVersion()
+	{
+		if (GameDir() is not string game)
+		{
+			return null;
+		}
+		try
+		{
+			using FileStream f = new(Path.Combine(game, "Railroader_Data", "globalgamemanagers"), FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+			byte[] head = new byte[65536];
+			string text = Encoding.Latin1.GetString(head, 0, f.ReadAtLeast(head, head.Length, false));
+			int start = text.IndexOf("Giraffe Lab", StringComparison.Ordinal);
+			// A string behind its length: the player settings' bundleVersion.
+			Match m = start < 0 ? Match.Empty : Regex.Match(text[start..], @"([\x05-\x0a])\0\0\0(\d+\.\d+\.\d+[a-z]?)(?![\w.])");
+			return m.Success && m.Groups[2].Length == m.Groups[1].Value[0] ? m.Groups[2].Value : null;
+		}
+		catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+		{
+			return null;
+		}
 	}
 
 	private static List<string> SplitArgs(string s)

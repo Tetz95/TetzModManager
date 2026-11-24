@@ -47,7 +47,8 @@ handler that was there before, and "Give Nexus links back" restores it).
   - an installed mod is replaced in its own folder; a new one gets the archive's folder name;
   - a mod with the same version but newer files (test builds often keep their version) counts as an update;
   - each replaced folder is kept for **Roll back** (one earlier version per mod);
-  - Preferences.json gets the new version, or a new enabled entry. Everything else in the file is written back as it
+  - Preferences.json gets the new version, or a new enabled entry (none for a mod that loads because another requires
+    it: see below). Everything else in the file is written back as it
     was; the last 20 versions of the file are kept in `%APPDATA%\TetzModManager\preferences-backups`;
   - nothing is changed while Railroader runs; it asks first for an older version, a blocked folder or an add-on.
 - **Archive**: each package's archive is copied to the archive folder (a folder install is zipped); the package's
@@ -70,9 +71,16 @@ handler that was there before, and "Give Nexus links back" restores it).
   in Explorer, Nexus page, Link to Nexus, Copy name/identifiers, Roll back and Uninstall; on a mod in the details
   pane, Enable/Disable, Open folder and Copy identifier.
 - **Windows remember** their size and position (and the main window its splitters) between runs.
-- **Notes** flag the same mod in two folders, a mod not in Preferences.json while nothing enabled needs it, a
-  Preferences.json version differing from the folder's, a missing or disabled required mod, an enabled incompatible mod,
-  a game-version pin, and a package member missing from Mods.
+- **Why a mod isn't enabled**: the Notes column says why the game won't load a mod, by the game's own rules (0.6.3):
+  disabled; no entry in Preferences.json, and which mods that require it aren't loaded; a required mod missing, too old
+  or unable to load itself; an incompatible mod enabled; another game version needed; DLL mods switched off; another copy
+  of it used; a Unity Mod Manager mod. Enabling a mod without an entry adds one. The On box's tooltip says the same.
+- **Required mods**: a mod that another loaded mod requires loads by itself, and the game takes its entry out of
+  Preferences.json. Such a mod's On box is locked and names the mods that require it. When you disable or uninstall the
+  last of them, the manager gives it an entry so it stays enabled (and says so in the log), unless it's a library that
+  came in a package whose other mods require it.
+- **Notes** also flag the same mod in two folders, a Preferences.json version differing from the folder's, a game-version
+  pin, and a package member missing from Mods.
 
 Its own files: `%APPDATA%\TetzModManager` (settings, package list, Preferences.json backups, window places) and
 `%LOCALAPPDATA%\TetzModManager` (rollback copies, work folder).
@@ -89,7 +97,7 @@ TETZMM_DATA=<scratch> dotnet run --project tools/SmokeTest -- "<home>" "<folder 
 ```
 
 `TETZMM_DATA` moves all of the tool's own files (settings, state, rollback copies, work folder) for tests;
-`TETZMM_SNAPSHOT=<png>` (with `TETZMM_SELECT=<name>`) renders the window to a file and closes it.
+`TETZMM_SNAPSHOT=<png>` (with `TETZMM_SELECT=<name>`, `TETZMM_VIEW=<view number>`) renders the window to a file and closes it.
 
 ## Licence
 

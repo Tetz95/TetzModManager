@@ -53,6 +53,10 @@ public sealed class Preferences
 
 	public string? Version(string identifier) => (string?)Find(identifier)?["version"];
 
+	/// <summary>The game's "Allow DLL Mods" setting (off when the file doesn't have it).</summary>
+	public bool AllowDllMods => _root["settings"]?["mods.allow-dll"] is JsonValue v
+		&& (v.TryGetValue(out bool b) ? b : v.TryGetValue(out double n) && n != 0);
+
 	public void SetEnabled(string identifier, bool enabled)
 	{
 		JsonObject o = Find(identifier) ?? throw new InvalidOperationException($"{identifier} isn't in Preferences.json.");

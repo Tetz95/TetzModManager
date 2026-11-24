@@ -21,7 +21,8 @@ public sealed class PackageRow(InstalledPackage p)
 		: $"{Package.Members.Count} mods" + (Package.Shared.Count > 0 ? $" ({Package.Shared.Count} shared)" : "");
 	public string NexusId => Package.Record?.NexusModId?.ToString() ?? "";
 
-	private List<InstalledMod> Toggleable => Package.Own.Where(m => m.InPreferences).ToList();
+	/// <summary>The package's own mods, without those the game loads because another mod requires them.</summary>
+	private List<InstalledMod> Toggleable => Package.Own.Where(m => m.Manifest.Identifier != null && !m.LoadedAsDependency).ToList();
 	public bool? Enabled
 	{
 		get
@@ -29,18 +30,40 @@ public sealed class PackageRow(InstalledPackage p)
 			List<InstalledMod> t = Toggleable;
 			if (t.Count == 0)
 			{
-				return Package.Members.Count > 0 && Package.Members.All(m => m.LoadedAsDependency || m.Enabled == true) ? true : Package.Record?.IsAddOn == true ? true : null;
+				return Package.Members.Any(m => m.Loads) || Package.Record?.IsAddOn == true ? true : null;
 			}
-			return t.All(m => m.Enabled == true) ? true : t.All(m => m.Enabled == false) ? false : null;
+			return t.All(m => m.Enabled == true) ? true : t.All(m => m.Enabled != true) && !Package.Own.Any(m => m.Loads) ? false : null;
 		}
 	}
 	public int EnabledSort => Enabled switch { true => 0, null => 1, false => 2 };
 	public bool CanToggle => Toggleable.Count > 0;
-	public string EnabledTip => CanToggle ? "Enables or disables the package's mods in Preferences.json" : "Loaded because an enabled mod requires it";
+	public string EnabledTip
+	{
+		get
+		{
+			List<string> lines = [];
+			if (CanToggle)
+			{
+				lines.Add("Enables or disables the package's mods in Preferences.json");
+			}
+			bool many = Package.Members.Count > 1;
+			lines.AddRange(Package.Members.Where(m => m.LoadedAsDependency).Select(m => (many ? m.Manifest.Name + ": " : "") + MemberRow.Needing(m)));
+			lines.AddRange(Package.Members.Where(m => m.NotLoaded != null).Select(m => (many ? m.Manifest.Name + ": " : "") + m.NotLoaded));
+			return string.Join(Environment.NewLine, lines);
+		}
+	}
 	public bool IsDisabled => Enabled == false;
 	public bool UpdateAvailable => Package.UpdateAvailable;
 	public bool HasWarning => Package.Notes.Count > 0;
-	public string NotesText => string.Join("; ", Package.Notes);
+	public string NotesText
+	{
+		get
+		{
+			List<InstalledMod> off = Package.Members.Where(m => m.OffByChoice).ToList();
+			bool same = off.Count > 0 && off.Count == Package.Members.Count && off.Select(m => m.NotLoaded).Distinct().Count() == 1;
+			return string.Join("; ", (same ? [off[0].NotLoaded!] : off.Select(m => $"{m.Manifest.Name}: {m.NotLoaded}")).Concat(Package.Notes));
+		}
+	}
 }
 
 /// <summary>A mod inside the selected package.</summary>
@@ -51,14 +74,16 @@ public sealed class MemberRow(InstalledMod m, InstalledPackage p, IEnumerable<st
 	public string Version => Mod.Manifest.Version;
 	public string Key => Mod.Manifest.Identifier ?? Mod.Key;
 	public string Folder => Mod.FolderName;
-	public bool? Enabled => Mod.LoadedAsDependency ? true : Mod.Enabled;
-	public bool CanToggle => Mod.InPreferences;
-	public string EnabledTip => Mod.LoadedAsDependency ? "Loaded because an enabled mod requires it" : Mod.InPreferences ? "Enabled in Preferences.json" : "";
-	public bool IsDisabled => Mod.Enabled == false;
+	public bool? Enabled => Mod.LoadedAsDependency ? true : Mod.Enabled ?? (Mod.Manifest.Identifier != null ? false : null);
+	public bool CanToggle => Mod.Manifest.Identifier != null && !Mod.LoadedAsDependency;
+	public string EnabledTip => Mod.LoadedAsDependency ? Needing(Mod) : Mod.NotLoaded ?? (Mod.InPreferences ? "Enabled in Preferences.json" : "");
+	public bool IsDisabled => Mod.Manifest.Identifier != null && !Mod.Loads;
+	public static string Needing(InstalledMod m) =>
+		$"Loaded because {LoadRules.Names(m.RequiredBy)} {(m.RequiredBy.Count == 1 ? "requires" : "require")} it (the game keeps no entry for such a mod)";
 	public bool UpdateAvailable => false;
 	public bool HasWarning => Mod.Notes.Count > 0;
 	public string NotesText => string.Join("; ", (p.Shared.Contains(Mod.Key) ? [$"also in {string.Join(", ", sharedWith)}"] : Array.Empty<string>())
-		.Concat(Mod.VortexManaged ? ["deployed by Vortex"] : Array.Empty<string>()).Concat(Mod.Notes));
+		.Concat(Mod.VortexManaged ? ["deployed by Vortex"] : Array.Empty<string>()).Concat(Mod.OffByChoice ? [Mod.NotLoaded!] : Array.Empty<string>()).Concat(Mod.Notes));
 }
 
 public partial class MainWindow : Window
@@ -292,6 +317,11 @@ public partial class MainWindow : Window
 		{
 			return;
 		}
+		if (int.TryParse(Environment.GetEnvironmentVariable("TETZMM_VIEW"), out int view))
+		{
+			ViewBox.SelectedIndex = view;
+			ApplyFilter();
+		}
 		if (Environment.GetEnvironmentVariable("TETZMM_SELECT") is string sel)
 		{
 			Grid.SelectedItem = Grid.Items.Cast<PackageRow>().FirstOrDefault(r => r.Name.Contains(sel, StringComparison.OrdinalIgnoreCase));
@@ -333,7 +363,7 @@ public partial class MainWindow : Window
 			Grid.SelectedItem = Grid.Items.Cast<PackageRow>().FirstOrDefault(r => r.Package.Id == selected);
 		}
 		int updates = _rows.Count(r => r.UpdateAvailable);
-		Counts.Text = $"{_rows.Count} packages, {_scan.Mods.Count} mod folders, {_scan.Mods.Count(m => m.Enabled == true)} enabled, {updates} updates, {_rows.Count(r => r.HasWarning)} with notes";
+		Counts.Text = $"{_rows.Count} packages, {_scan.Mods.Count} mod folders, {_scan.Mods.Count(m => m.Loads)} enabled, {updates} updates, {_rows.Count(r => r.HasWarning)} with notes";
 		UpdateAllButton.IsEnabled = updates > 0;
 		UpdateAllButton.Content = updates > 0 ? $"Update all ({updates})" : "Update all";
 		ShowDetails();
@@ -359,7 +389,7 @@ public partial class MainWindow : Window
 			1 => rows.Where(r => r.UpdateAvailable),
 			2 => rows.Where(r => r.HasWarning),
 			3 => rows.Where(r => r.Package.Notes.Any(n => n.Contains("Duplicate"))),
-			4 => rows.Where(r => r.IsDisabled || r.Package.Members.Any(m => m.Enabled == false)),
+			4 => rows.Where(r => r.IsDisabled || r.Package.Members.Any(m => m.NotLoaded != null)),
 			5 => rows.Where(r => r.Package.Members.Count > 1),
 			6 => rows.Where(r => r.Package.Record?.IsAddOn == true),
 			7 => rows.Where(r => r.Package.Record?.NexusModId == null),
@@ -416,6 +446,9 @@ public partial class MainWindow : Window
 				lines.Add($"Adds {files.Count} files to {key}");
 			}
 		}
+		bool many = p.Members.Count > 1;
+		lines.AddRange(p.Members.Where(m => m.NotLoaded != null).Select(m => (many ? m.Manifest.Name + ": " : "") + m.NotLoaded));
+		lines.AddRange(p.Members.Where(m => m.LoadedAsDependency).Select(m => (many ? m.Manifest.Name + ": " : "") + MemberRow.Needing(m)));
 		lines.AddRange(p.Missing.Select(k => $"• {k} is part of this package but not in Mods"));
 		Details.Text = string.Join(Environment.NewLine, lines);
 		MembersGrid.ItemsSource = p.Members.Select(m => new MemberRow(m, p,
@@ -932,13 +965,8 @@ public partial class MainWindow : Window
 		}
 		try
 		{
-			Preferences prefs = Preferences.Load(_settings.PreferencesPath);
-			foreach (InstalledMod m in mods.Where(m => m.InPreferences && m.Manifest.Identifier != null))
-			{
-				prefs.SetEnabled(m.Manifest.Identifier!, on);
-			}
-			prefs.Save();
 			Log($"{(on ? "Enabled" : "Disabled")} {what}");
+			Installer.SetEnabled(_settings, _state, mods.ToList(), on, Log);
 		}
 		catch (Exception ex) when (ex is IOException or InvalidOperationException)
 		{
@@ -1135,7 +1163,7 @@ public partial class MainWindow : Window
 			e.Handled = true;
 			return;
 		}
-		MemberMenuToggle.Header = m.Mod.Enabled == false ? "Enable" : "Disable";
+		MemberMenuToggle.Header = m.Mod.Enabled != true ? "Enable" : "Disable";
 		MemberMenuToggle.IsEnabled = m.CanToggle;
 	}
 
@@ -1143,7 +1171,7 @@ public partial class MainWindow : Window
 	{
 		if (MembersGrid.SelectedItem is MemberRow m)
 		{
-			SetEnabled([m.Mod], m.Mod.Enabled == false, m.Name);
+			SetEnabled([m.Mod], m.Mod.Enabled != true, m.Name);
 		}
 	}
 

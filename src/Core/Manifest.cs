@@ -21,7 +21,8 @@ public sealed record ModManifest(
 	IReadOnlyList<string> Incompatible,
 	// A Unity Mod Manager mod's AssemblyName (a Legacy DLL mod). Without one (sound packs such as Reaper's: info.json +
 	// Audio) the files are data: the game doesn't load them, but a 0.6 mod may read them (Rex's Tool Box does Reaper's).
-	string? UmmAssembly = null)
+	string? UmmAssembly = null,
+	bool HasAssemblies = false)
 {
 	private static readonly JsonDocumentOptions Options = new() { AllowTrailingCommas = true, CommentHandling = JsonCommentHandling.Skip };
 
@@ -78,7 +79,8 @@ public sealed record ModManifest(
 				Str(root, "description") ?? "",
 				Str(root, "scope"),
 				false,
-				List(deps, "required"), List(deps, "optional"), List(deps, "incompatible"));
+				List(deps, "required"), List(deps, "optional"), List(deps, "incompatible"),
+				HasAssemblies: List(root, "assemblies").Count > 0);
 		}
 		string? id = Str(root, "Id");
 		if (id != null)

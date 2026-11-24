@@ -13,8 +13,18 @@ public sealed class InstalledMod
 	public bool VortexManaged { get; init; }
 	public bool HasManifest { get; init; } = true;
 	public bool InPreferences { get; set; }
-	/// <summary>Not in Preferences.json, but an enabled mod requires it, so the game loads it anyway.</summary>
-	public bool LoadedAsDependency { get; set; }
+	/// <summary>The game will load it (see <see cref="LoadRules"/>).</summary>
+	public bool Loads { get; set; }
+	/// <summary>The loaded mods that require it, by name.</summary>
+	public List<string> RequiredBy { get; } = [];
+	/// <summary>A loaded mod requires it: the game loads it whatever Preferences.json says, and keeps no entry for it.</summary>
+	public bool LoadedAsDependency => Loads && RequiredBy.Count > 0;
+	/// <summary>Why the game won't load it, when it won't.</summary>
+	public string? NotLoaded { get; set; }
+	/// <summary>It's only switched off: the reason is shown, but isn't a warning.</summary>
+	public bool OffByChoice { get; set; }
+	/// <summary>Enabling it isn't enough: something it needs is missing, or it conflicts with a loaded mod.</summary>
+	public bool CannotLoad { get; set; }
 	public bool? Enabled { get; set; }
 	public string? PreferencesVersion { get; set; }
 	public List<string> Notes { get; } = [];
@@ -133,6 +143,10 @@ public static class Scanner
 				mod.Notes.Add($"your local edit in {edit}: an update replaces it");
 			}
 			mods.Add(mod);
+		}
+		if (prefs != null)
+		{
+			LoadRules.Apply(mods, prefs, Path.Combine(Path.GetDirectoryName(settings.ModsDir) ?? "", "ModDev"), Steam.GameVersion());
 		}
 		AddModNotes(mods);
 		return mods;
@@ -265,36 +279,8 @@ public static class Scanner
 		}
 	}
 
-	/// <summary>Identifiers the enabled mods require, directly or through other mods: the game loads those without entries.</summary>
-	private static HashSet<string> NeededByEnabled(List<InstalledMod> mods, Dictionary<string, InstalledMod> byIdentifier)
-	{
-		HashSet<string> needed = new(StringComparer.OrdinalIgnoreCase);
-		Queue<InstalledMod> queue = new(mods.Where(m => m.Enabled == true));
-		while (queue.Count > 0)
-		{
-			foreach (string dep in queue.Dequeue().Manifest.Required)
-			{
-				string id = ModManifest.SplitDependency(dep).Id;
-				if (needed.Add(id) && byIdentifier.TryGetValue(id, out InstalledMod? d))
-				{
-					queue.Enqueue(d);
-				}
-			}
-		}
-		return needed;
-	}
-
 	private static void AddModNotes(List<InstalledMod> mods)
 	{
-		Dictionary<string, InstalledMod> byIdentifier = new(StringComparer.OrdinalIgnoreCase);
-		foreach (InstalledMod mod in mods)
-		{
-			if (mod.Manifest.Identifier is string id)
-			{
-				byIdentifier.TryAdd(id, mod);
-			}
-		}
-
 		// The same mod twice, under different folder names.
 		foreach (IGrouping<string, InstalledMod> g in mods.Where(m => m.HasManifest).GroupBy(m => m.Key, StringComparer.OrdinalIgnoreCase).Where(g => g.Count() > 1))
 		{
@@ -305,51 +291,22 @@ public static class Scanner
 			}
 		}
 
-		HashSet<string> needed = NeededByEnabled(mods, byIdentifier);
-		foreach (InstalledMod mod in mods.Where(m => m.Manifest.Identifier != null))
+		foreach (InstalledMod mod in mods)
 		{
-			if (!mod.InPreferences)
+			if (mod.NotLoaded != null && !mod.OffByChoice)
 			{
-				mod.LoadedAsDependency = needed.Contains(mod.Manifest.Identifier!);
-				if (!mod.LoadedAsDependency)
-				{
-					mod.Notes.Add("Not in Preferences.json and nothing enabled needs it (the game won't load it)");
-				}
+				mod.Notes.Insert(0, mod.NotLoaded);
 			}
-			else if (mod.PreferencesVersion != null && mod.PreferencesVersion != mod.Manifest.Version)
+			if (mod.InPreferences && mod.PreferencesVersion != null && mod.PreferencesVersion != mod.Manifest.Version)
 			{
 				mod.Notes.Add($"Preferences.json says {mod.PreferencesVersion}");
 			}
 			foreach (string dep in mod.Manifest.Required)
 			{
 				(string depId, string constraint) = ModManifest.SplitDependency(dep);
-				if (depId == "rr/game")
+				if (depId == "rr/game" && constraint.StartsWith("==", StringComparison.Ordinal))
 				{
-					if (constraint.StartsWith("==", StringComparison.Ordinal))
-					{
-						mod.Notes.Add($"Pinned to game {constraint[2..].Trim()}");
-					}
-					continue;
-				}
-				if (depId.StartsWith("rr/", StringComparison.Ordinal))
-				{
-					continue;
-				}
-				if (!byIdentifier.TryGetValue(depId, out InstalledMod? d))
-				{
-					mod.Notes.Add($"Needs {depId} (not installed)");
-				}
-				else if (d.Enabled == false && mod.Enabled != false)
-				{
-					mod.Notes.Add($"Needs {d.Manifest.Name} (disabled)");
-				}
-			}
-			foreach (string inc in mod.Manifest.Incompatible)
-			{
-				(string incId, _) = ModManifest.SplitDependency(inc);
-				if (byIdentifier.TryGetValue(incId, out InstalledMod? other) && other.Enabled != false && mod.Enabled != false)
-				{
-					mod.Notes.Add($"Incompatible with {other.Manifest.Name} (both enabled)");
+					mod.Notes.Add($"Pinned to game {constraint[2..].Trim()}");
 				}
 			}
 		}
