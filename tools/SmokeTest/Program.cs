@@ -1,10 +1,10 @@
 using TetzModManager;
 
 // Smoke test. Reads the real home folder and Vortex downloads (never writes them); installs go into a throwaway home.
-// Usage: set TETZMM_DATA=<scratch>; dotnet run -- <real home> <Vortex downloads dir> <LT zip new> <LT zip old> [nexus key file]
+// Usage: set TETZMM_DATA=<scratch>; dotnet run -- <real home> <Vortex downloads dir> <LT zip new> <LT zip old> [online]
 string data = Environment.GetEnvironmentVariable("TETZMM_DATA") ?? throw new Exception("Set TETZMM_DATA to a scratch folder.");
 string realHome = args[0], vortex = args[1], ltNew = args[2], ltOld = args[3];
-string? keyFile = args.Length > 4 ? args[4] : null;
+bool online = args.Length > 4 && args[4] == "online";
 void Log(string s) => Console.WriteLine(s);
 int failures = 0;
 void Check(bool ok, string what)
@@ -47,10 +47,9 @@ Check(scan.Packages.Any(p => p.Members.Any(m => m.FolderName == "ld-gp38")) && s
 InstalledPackage? gp60 = scan.Packages.FirstOrDefault(p => p.Members.Any(m => m.FolderName == "gp60"));
 Check(gp60?.Members.Count == 3, $"Freeman's GP60 pack is one package of 3 ({gp60?.Name})");
 
-if (keyFile != null)
+if (online)
 {
-	real.NexusKeyFile = keyFile;
-	using NexusClient nexus = new(real.ReadNexusKey() ?? throw new Exception("no key"));
+	using NexusPublicClient nexus = new();
 	int updates = await Updates.Check(nexus, state, scan.Packages, Log);
 	int linked = scan.Packages.Count(p => p.Record?.NexusModId != null);
 	Log($"{updates} updates; {scan.Packages.Count(p => p.Record?.NexusFileId != null)} of {linked} linked packages matched to their Nexus file");

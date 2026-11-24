@@ -148,7 +148,7 @@ public partial class MainWindow : Window
 
 	private async Task AutoCheckMods(TimeSpan after)
 	{
-		if (!_settings.AutoCheckUpdates || _busy || _settings.ReadNexusKey() == null
+		if (!_settings.AutoCheckUpdates || _busy
 			|| _settings.LastUpdateCheck is DateTime last && DateTime.Now - last < after)
 		{
 			return;
@@ -156,14 +156,12 @@ public partial class MainWindow : Window
 		await CheckModUpdates(auto: true);
 	}
 
-	/// <summary>Asks Nexus for the newest file of every linked package. Automatic checks only log their errors.</summary>
+	/// <summary>
+	/// Asks Nexus for the newest file of every linked package (no API key needed). Automatic checks only log their errors.
+	/// </summary>
 	private async Task CheckModUpdates(bool auto)
 	{
-		using NexusClient? nexus = auto ? (_settings.ReadNexusKey() is string key ? new NexusClient(key) : null) : Nexus();
-		if (nexus == null)
-		{
-			return;
-		}
+		using NexusPublicClient nexus = new();
 		async Task Work()
 		{
 			Log($"Checking {_scan.Packages.Count(p => p.Record?.NexusModId != null)} linked packages on Nexus{(auto ? " (automatic check)" : "")}...");
@@ -542,7 +540,8 @@ public partial class MainWindow : Window
 		string? key = _settings.ReadNexusKey();
 		if (key == null)
 		{
-			MessageBox.Show(this, "Set the file with your Nexus API key in Settings first.", "Nexus", MessageBoxButton.OK, MessageBoxImage.Information);
+			MessageBox.Show(this, "Downloading from Nexus here needs your API key (set its file in Settings).\n\n"
+				+ "Without one, use \"Manual download\" on the mod's Nexus page and drop the file on this window.", "Nexus", MessageBoxButton.OK, MessageBoxImage.Information);
 			return null;
 		}
 		return new NexusClient(key);
@@ -821,6 +820,11 @@ public partial class MainWindow : Window
 	private async Task UpdateRows(List<PackageRow> rows)
 	{
 		rows = rows.Where(r => r.UpdateAvailable && r.Package.Record?.LatestFileId != null).ToList();
+		if (_settings.ReadNexusKey() == null)
+		{
+			OpenUpdatePages(rows);
+			return;
+		}
 		if (rows.Count == 0 || !GameClosedOrSay())
 		{
 			return;
@@ -862,11 +866,37 @@ public partial class MainWindow : Window
 		});
 	}
 
+	/// <summary>Without an API key the updates are downloaded by hand: opens each one's page at its file list.</summary>
+	private void OpenUpdatePages(List<PackageRow> rows)
+	{
+		List<(int Mod, int File)> pages = rows.Select(r => (r.Package.Record!.NexusModId!.Value, r.Package.Record.LatestFileId!.Value)).Distinct().ToList();
+		if (pages.Count == 0)
+		{
+			return;
+		}
+		string what = pages.Count == 1 ? "the file's Nexus page" : $"{pages.Count} Nexus pages";
+		if (MessageBox.Show(this, "Without a Nexus API key, updates are downloaded by hand: use \"Manual download\" on the page, then drop the file on this window.\n\n"
+			+ string.Join("\n", rows.Select(r => $"{r.Name}  {r.Package.InstalledVersion} → {r.Latest}")) + $"\n\nOpen {what}?",
+			"Update", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes)
+		{
+			return;
+		}
+		foreach ((int mod, int file) in pages)
+		{
+			Process.Start(new ProcessStartInfo($"https://www.nexusmods.com/{NexusClient.GameDomain}/mods/{mod}?tab=files&file_id={file}") { UseShellExecute = true });
+		}
+	}
+
 	private async void OnUpdateSelected(object sender, RoutedEventArgs e) => await UpdateRows(Selected);
 
 	private async void OnUpdateAll(object sender, RoutedEventArgs e)
 	{
 		List<PackageRow> rows = _rows.Where(r => r.UpdateAvailable).ToList();
+		if (_settings.ReadNexusKey() == null)
+		{
+			OpenUpdatePages(rows.Where(r => r.Package.Record?.LatestFileId != null).ToList());
+			return;
+		}
 		if (MessageBox.Show(this, "Update these from Nexus?\n\n" + string.Join("\n", rows.Select(r => $"{r.Name}  {r.Package.InstalledVersion} → {r.Latest}")),
 			"Update all", MessageBoxButton.YesNo, MessageBoxImage.Question) == MessageBoxResult.Yes)
 		{

@@ -97,7 +97,7 @@ public sealed class SettingsWindow : Window
 		_home = Field("Game home folder", settings.HomeDir, false,
 			$"Holds Mods and Preferences.json. Leave blank to follow the game: now {detected} ({from}).");
 		_archive = Field("Archive folder", settings.ArchiveDir, false, "Every installed archive is kept here, the newest one per mod.");
-		_key = Field("Nexus API key file", settings.NexusKeyFile, true, "A text file with your personal API key (nexusmods.com > Site preferences > API keys). Sent only to api.nexusmods.com.");
+		_key = Field("Nexus API key file", settings.NexusKeyFile, true, "A text file with your personal API key (nexusmods.com > Site preferences > API keys). Sent only to api.nexusmods.com. Optional: update checks work without one, downloading from Nexus here needs it.");
 		_vortex = Field("Vortex downloads", settings.VortexDownloadsDir, false, "Vortex's Railroader download folder: used once to link installed mods to their Nexus pages.");
 		_edits = Field("Local edits folder", settings.LocalEditsDir, false,
 			"Optional: your own edits to other authors' mods, one folder per mod named like its folder in Mods. Those mods get a note, and updating them asks first.");

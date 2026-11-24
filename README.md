@@ -10,9 +10,10 @@ Preferences.json before trying it.
 ## Requirements
 
 - Windows 10/11 and the [.NET 10 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/10.0).
-- For updates and Nexus downloads: your personal Nexus Mods API key, saved in a text file
-  (nexusmods.com > Site preferences > API keys). Downloads through the API need a Premium account; free accounts can
-  still use the "Mod Manager Download" button on a mod's page.
+- For Nexus downloads: your personal Nexus Mods API key, saved in a text file (nexusmods.com > Site preferences > API
+  keys). **Update** needs a Premium account; free accounts with a key can still use the "Mod Manager Download" button on
+  a mod's page. Update checks work without a key; then **Update** opens the file's Nexus page, and you drop the
+  downloaded file on the window.
 - For 7z and rar archives: [7-Zip](https://www.7-zip.org/) in `C:\Program Files\7-Zip`.
 
 ## Install
@@ -51,9 +52,10 @@ handler that was there before, and "Give Nexus links back" restores it).
   - nothing is changed while Railroader runs; it asks first for an older version, a blocked folder or an add-on.
 - **Archive**: each package's archive is copied to the archive folder (a folder install is zipped); the package's
   previous archive is deleted, so there is one per package.
-- **Check for updates** matches each package to its Nexus file and follows Nexus's file-update chain to the newest file.
-  **Update** downloads and installs it. The check also runs by itself when the manager opens (if the last one is more
-  than an hour old) and every 6 hours while it's open (Settings); nothing installs until you press Update or Update all.
+- **Check for updates** matches each package to its Nexus file and finds that file's newest version. It needs no API
+  key. **Update** downloads and installs it (with a key; without one it opens the Nexus page). The check also runs by
+  itself when the manager opens (if the last one is more than an hour old) and every 6 hours while it's open
+  (Settings); nothing installs until you press Update or Update all.
 - **Manager updates**: on opening (at most every 6 hours) and with Check for updates, the manager looks for a newer
   release of itself on GitHub and offers it with its notes: Yes downloads it, closes the manager and starts the new
   version; No skips that version.
@@ -83,7 +85,7 @@ dotnet publish src/App/App.csproj -c Release -o <folder>   # the folder name mus
 # release build: no debug files or local paths in the DLLs
 dotnet publish src/App/App.csproj -c Release -o <folder> -p:DebugType=none -p:DebugSymbols=false "-p:PathMap=<repo folder>=."
 # smoke test: reads a real home folder, installs into a throwaway one
-TETZMM_DATA=<scratch> dotnet run --project tools/SmokeTest -- "<home>" "<folder of mod zips: Vortex downloads or the archive>" "<mod zip>" "<older zip of that mod>" [key file]
+TETZMM_DATA=<scratch> dotnet run --project tools/SmokeTest -- "<home>" "<folder of mod zips: Vortex downloads or the archive>" "<mod zip>" "<older zip of that mod>" [online]
 ```
 
 `TETZMM_DATA` moves all of the tool's own files (settings, state, rollback copies, work folder) for tests;
